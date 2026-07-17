@@ -35,7 +35,7 @@ pub fn classify_anthropic_cli(stdout: &str) -> Option<&'static str>;
 pub fn filter_child_env(parent: &BTreeMap<String,String>) -> BTreeMap<String,String>;
 ```
 
-`filter_child_env` is the **Credential Broker** seam living beside the Router: only an allowlisted
+`filter_child_env` is the credential-filtering seam beside the Router: only an allowlisted
 set of env vars crosses into the `claude -p` child, so an unrelated host secret cannot leak into
 the subscription hop.
 
