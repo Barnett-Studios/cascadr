@@ -1,0 +1,12 @@
+{
+  "http_429": true,
+  "http_500": true,
+  "http_503": true,
+  "http_504": true,
+  "http_401": true,
+  "http_404": true,
+  "http_400": true,
+  "http_200": false,
+  "conn_refused": true,
+  "timeout": true
+}

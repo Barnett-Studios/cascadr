@@ -1,0 +1,21 @@
+[package]
+name = "cascadr"
+version = "0.1.0"
+edition = "2021"
+description = "Cost-ordered fail-open LLM provider cascade — cheapest-capable first, never proxies the subscription hop"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Barnett-Studios/cascadr"
+
+[lib]
+name = "cascadr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cascadr"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+libc = "0.2"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "process", "io-util"] }
