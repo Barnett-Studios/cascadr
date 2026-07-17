@@ -1,14 +1,13 @@
 //! Task 3.2 — cache-integrity guard. The `anthropic-cli` provider must forward its
-//! request byte-identical: argv, stdin, and the filtered env exactly as today's
-//! (pre-router) `ClaudeCliDispatch` sent them. A prior tool (Headroom) rewrote a
-//! request prefix and destroyed the Anthropic prompt cache — this guard exists so
-//! that mistake can never silently return via the `Provider`/`Router` seam.
+//! request byte-identical: argv, stdin, and the filtered env exactly as a direct
+//! `ClaudeCliDispatch` call sends them. A prior tool once rewrote a request prefix
+//! and destroyed the Anthropic prompt cache — this guard exists so that mistake can
+//! never silently return via the `Provider`/`Router` seam.
 //!
 //! The complementary "no mutation seam" guarantee — that `Provider`/`Router` expose
-//! no request-rewrite hook a future shared interceptor could attach to — is proven
-//! in `crates/dotclaude-core/src/provider.rs`'s
-//! `provider_router_forwards_prompt_byte_identical_no_mutation_seam` unit test
-//! (`Provider::dispatch` takes only `&str` in, returns owned `String` out).
+//! no request-rewrite hook a future shared interceptor could attach to — holds
+//! structurally: `Provider::dispatch` takes only `&str` in and returns an owned
+//! `String` out, so there is no seam to attach a mutation to.
 
 use cascadr::ClaudeCliDispatch;
 use cascadr::Provider;

@@ -51,8 +51,8 @@ pub trait Provider: Send + Sync {
 
 // ---- classification helpers (M1: secrets never enter error/log text) ----
 
-/// Classify an HTTP status per the shared M1 static-reason table (mirrors the Python
-/// `_classify_unavailable` in `skills/execute-node/execute_node.py`): 429 first,
+/// Classify an HTTP status per the M1 static-reason table (secrets never enter
+/// error/log text): 429 first,
 /// then 5xx, then the remaining 4xx. Anything outside 4xx/5xx is not classified by
 /// this table (the caller falls back to a generic reason).
 pub fn classify_http_status(status: u16) -> Option<&'static str> {
@@ -65,17 +65,17 @@ pub fn classify_http_status(status: u16) -> Option<&'static str> {
 }
 
 /// True when `status` must be treated as `ProviderError::Unavailable` (fail-open):
-/// any non-2xx status is unavailable, only 2xx is available. Mirrors the shared
-/// parity fixture `tests/fixtures/provider_unavailable_cases.json` (vendored from
-/// execute-node; `$CASCADR_PARITY_FIXTURE` checks the live copy for drift).
+/// any non-2xx status is unavailable, only 2xx is available. Mirrors the vendored
+/// parity fixture `tests/fixtures/provider_unavailable_cases.json`; set
+/// `$CASCADR_PARITY_FIXTURE` to check an external copy for drift (e.g. against a driving loop's classifier).
 pub fn is_unavailable_status(status: u16) -> bool {
     !(200..300).contains(&status)
 }
 
 /// Classify a `claude -p --output-format json` stdout body. Returns a static classified
 /// reason when the body is a well-formed error envelope (exit-0 rate-limit / overload —
-/// Max20 exhaustion), else None. Mirrors the Python cascade's is_error handling
-/// (execute_node.py:172). NEVER echoes the body or any secret — static reason only (M1).
+/// subscription exhaustion), else None. Mirrors the standard `is_error` envelope
+/// handling. NEVER echoes the body or any secret — static reason only (M1).
 pub fn classify_anthropic_cli(stdout: &str) -> Option<&'static str> {
     let v: Value = serde_json::from_str(stdout).ok()?;
     match v.get("is_error") {
@@ -352,7 +352,7 @@ impl Provider for ClaudeCliDispatch {
 // ---- openai-compat: curl-subprocess HTTP provider ----
 
 /// POSTs to `{base_url}/v1/chat/completions` via a `curl` subprocess (no new crate
-/// dependency — dotclaude-core stays HTTP-client-free). M1: only classified static
+/// dependency — cascadr stays HTTP-client-free). M1: only classified static
 /// reasons ever leave this type — never the url, host, or response body. M2: scheme
 /// allowlist (https anywhere, http only loopback) and no redirects followed.
 pub struct OpenAiCompat {
@@ -574,7 +574,7 @@ mod tests {
         // Exercises the Router fail-over semantics for an is_error-classified hop:
         // the first hop yields the exact Unavailable that ClaudeCliDispatch::dispatch
         // now returns when classify_anthropic_cli detects an exit-0 error envelope
-        // (Max20 exhaustion), and the Router must fall through to the second hop's
+        // (subscription exhaustion), and the Router must fall through to the second hop's
         // success rather than surfacing the first hop's failure.
         let is_error_reason = classify_anthropic_cli(r#"{"is_error":true,"result":"overloaded"}"#)
             .expect("well-formed is_error envelope must classify");
@@ -676,10 +676,10 @@ mod tests {
 
     #[test]
     fn provider_unavailable_cases_fixture_matches_classification() {
-        // Cross-loop parity fixture (shared source-of-truth with the Python
-        // execute-node classifier). Vendored under tests/fixtures/ so the crate is
-        // standalone-green; $CASCADR_PARITY_FIXTURE points at the live copy when
-        // checking for drift against execute-node.
+        // Parity fixture: cascadr's canonical unavailable-status table. Vendored
+        // under tests/fixtures/ so the crate is standalone; set
+        // $CASCADR_PARITY_FIXTURE to check an external copy for drift (e.g. a
+        // driving loop's own classifier).
         let path = std::env::var("CASCADR_PARITY_FIXTURE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {

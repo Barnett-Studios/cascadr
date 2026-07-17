@@ -55,8 +55,5 @@ OpenAI-compat). They are *partial* swaps — the `anthropic-cli` hop stays casca
 above. Semver on the crate; the trait, the `ProviderError` unavailability contract, the env config
 (`LLM_OPENAI_COMPAT_URL` — read by `OpenAiCompat::from_env`), and the CLI are the stable surface.
 
-> Note: this crate is a workspace member of the source monorepo *during staging* (so the full
-> suite verifies it continuously); "standalone-green" is proven by building/testing a copy taken
-> outside the workspace, and the vendored `Cargo.lock`/`rust-toolchain.toml` are for that
-> standalone repo. `LLM_CLOUD` and the local-fleet rung belong to the wider `execute-node`
-> cascade, not to this crate.
+> Note: multi-rung orchestration (`LLM_CLOUD`) and a local-fleet rung belong to a wider cascade
+> that layers cascadr in as its never-proxied subscription + paid rungs — not to this crate.
