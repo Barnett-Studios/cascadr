@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+# Runtime image built from a pre-compiled cascadr binary — no source, no toolchain.
+#
+# CI (.github/workflows/release.yml) extracts each release tarball into
+# dist/linux/<arch>/cascadr and builds this with `buildx --platform
+# linux/amd64,linux/arm64`; buildx selects the matching binary per platform via
+# $TARGETARCH, producing a multi-arch manifest with no QEMU emulation.
+#
+# Manual single-arch build:
+#   mkdir -p dist/linux/amd64
+#   tar -xzf cascadr-x86_64-unknown-linux-gnu.tar.gz -C dist/linux/amd64/
+#   docker build -f Dockerfile.dist -t cascadr .
+#
+# ubuntu:24.04 matches the release builder (ubuntu-latest, glibc 2.39) and ships
+# libgcc-s1 by default; the binary is OpenSSL-free (rustls), so only
+# ca-certificates is needed for outbound TLS.
+FROM ubuntu:24.04
+
+LABEL org.opencontainers.image.source="https://github.com/Barnett-Studios/cascadr" \
+      org.opencontainers.image.description="Cost-ordered fail-open LLM provider cascade" \
+      org.opencontainers.image.licenses="MIT OR Apache-2.0"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --create-home --user-group cascadr
+
+# Populated by CI (or a manual tar extraction) before build; buildx sets TARGETARCH.
+ARG TARGETARCH
+COPY --chmod=755 dist/linux/${TARGETARCH}/cascadr /usr/local/bin/cascadr
+
+USER 10001
+WORKDIR /repo
+ENTRYPOINT ["cascadr"]
