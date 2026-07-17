@@ -1,5 +1,10 @@
 # cascadr
 
+[![CI](https://github.com/Barnett-Studios/cascadr/actions/workflows/ci.yml/badge.svg)](https://github.com/Barnett-Studios/cascadr/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/cascadr)](https://crates.io/crates/cascadr)
+[![Downloads](https://img.shields.io/crates/d/cascadr)](https://crates.io/crates/cascadr)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 **A cost-ordered, fail-open LLM provider cascade — cheapest-capable first, and it never
 proxies the subscription hop.**
 
@@ -16,6 +21,14 @@ drops in as the paid rung behind the same `Provider` trait, but it cannot replac
 never-proxied subscription hop.
 
 > Part of the Barnett Studios agentic-harness toolkit → cxpak · commitward · abproof · **cascadr** · …
+
+## Install
+
+```sh
+brew tap Barnett-Studios/tap && brew install cascadr   # macOS/Linux
+cargo install cascadr                                   # any platform
+docker run --rm -i ghcr.io/barnett-studios/cascadr --model sonnet   # container
+```
 
 ## Use
 
@@ -48,3 +61,18 @@ Implement `Provider` to add a rung; order them cheapest-first. `classify_http_st
 next rung instead of surfacing a fake completion.
 
 See [`CONTRACT.md`](CONTRACT.md).
+
+## License
+
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Unless you explicitly state otherwise, any contribution you intentionally submit for
+inclusion in the work shall be dual-licensed as above, without any additional terms.
+
+---
+
+Built by [Barnett Studios](https://barnett-studios.com/) — part of the agentic-harness
+toolkit: [cxpak](https://github.com/Barnett-Studios/cxpak) ·
+[commitward](https://github.com/Barnett-Studios/commitward) · **cascadr** ·
+[abproof](https://github.com/Barnett-Studios/abproof) ·
+[cordon](https://github.com/Barnett-Studios/cordon) ·
+[planner](https://github.com/Barnett-Studios/planner).
