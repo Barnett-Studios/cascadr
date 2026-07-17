@@ -5,8 +5,9 @@ proxies the subscription hop.**
 
 cascadr dispatches a prompt down an ordered list of providers, stopping at the first that
 returns a completion and *failing open* past any rung that is unavailable (down, rate-limited,
-errored). The reference cascade is `local fleet → claude -p (anthropic-cli) → paid
-OpenAI-compatible router`. Its defining constraint: the `anthropic-cli` hop is invoked
+errored). This crate implements the `claude -p (anthropic-cli)` and paid `OpenAI-compatible`
+rungs of that cascade (a local-fleet rung is added by the wider `execute-node` cascade, not
+here). Its defining constraint: the `anthropic-cli` hop is invoked
 **directly, never through a network proxy** — proxying a subscription cockpit's credentials
 breaks prompt-cache integrity, so that rung stays a direct child-process call.
 

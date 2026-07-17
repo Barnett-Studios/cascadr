@@ -53,4 +53,10 @@ Exit `0` completion · `1` all rungs unavailable · `64` usage. Built from env:
 LiteLLM / OpenRouter / Portkey fill the paid rungs behind `Provider` (`OpenAiCompat` already speaks
 OpenAI-compat). They are *partial* swaps — the `anthropic-cli` hop stays cascadr's by the invariant
 above. Semver on the crate; the trait, the `ProviderError` unavailability contract, the env config
-(`LLM_OPENAI_COMPAT_URL`, `LLM_CLOUD`), and the CLI are the stable surface.
+(`LLM_OPENAI_COMPAT_URL` — read by `OpenAiCompat::from_env`), and the CLI are the stable surface.
+
+> Note: this crate is a workspace member of the source monorepo *during staging* (so the full
+> suite verifies it continuously); "standalone-green" is proven by building/testing a copy taken
+> outside the workspace, and the vendored `Cargo.lock`/`rust-toolchain.toml` are for that
+> standalone repo. `LLM_CLOUD` and the local-fleet rung belong to the wider `execute-node`
+> cascade, not to this crate.
