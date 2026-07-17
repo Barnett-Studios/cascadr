@@ -5,6 +5,10 @@ edition = "2021"
 description = "Cost-ordered fail-open LLM provider cascade — cheapest-capable first, never proxies the subscription hop"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Barnett-Studios/cascadr"
+rust-version = "1.94"
+readme = "README.md"
+keywords = ["llm", "router", "cascade", "anthropic", "openai"]
+categories = ["command-line-utilities", "api-bindings"]
 
 [lib]
 name = "cascadr"
