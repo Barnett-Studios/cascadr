@@ -208,6 +208,56 @@ pub struct ClaudeCliDispatch {
     pub model: String,
     pub timeout: Duration,
     pub work_dir: PathBuf,
+    /// Pass `--dangerously-skip-permissions` to the child `claude`.
+    ///
+    /// **Defaults to `false`. Opt in explicitly, and only when the caller has
+    /// arranged containment of its own.**
+    ///
+    /// The flag disables Claude Code's permission checks for the child, in
+    /// [`Self::work_dir`], with the caller's credentials. That is defensible when
+    /// the process is already inside a sandbox — which is what the original
+    /// unconditional use assumed. But this is a published library: a consumer that
+    /// links it (as `dotclaude-core` does, un-sandboxed) inherited that posture
+    /// silently, in its own cwd, having never asked for it (cascadr#11).
+    ///
+    /// The decision belongs to whoever knows the containment story. That is the
+    /// caller, never this crate.
+    pub skip_permissions: bool,
+}
+
+impl ClaudeCliDispatch {
+    /// Construct with permission checks **enabled** — the safe default.
+    ///
+    /// Prefer this over a struct literal: further fields can then be added without
+    /// breaking callers, which a literal cannot survive.
+    pub fn new(model: String, timeout: Duration, work_dir: PathBuf) -> Self {
+        Self {
+            model,
+            timeout,
+            work_dir,
+            skip_permissions: false,
+        }
+    }
+}
+
+/// Argv for the child `claude -p`, minus the binary itself.
+///
+/// Extracted so the exact flag set is assertable without spawning a process. The
+/// presence of `--dangerously-skip-permissions` is a security posture, and a
+/// posture that is only observable by running the thing is one that regresses
+/// unnoticed.
+pub fn claude_argv(model: &str, skip_permissions: bool) -> Vec<String> {
+    let mut argv = vec![
+        "-p".to_string(),
+        "--model".to_string(),
+        model.to_string(),
+        "--output-format".to_string(),
+        "json".to_string(),
+    ];
+    if skip_permissions {
+        argv.push("--dangerously-skip-permissions".to_string());
+    }
+    argv
 }
 
 // ---- env allowlist (spec security: blast-radius limiter) ----
@@ -302,21 +352,14 @@ impl Provider for ClaudeCliDispatch {
         let child_env = filter_child_env(&parent_env);
 
         let mut cmd = tokio::process::Command::new(&claude);
-        cmd.args([
-            "-p",
-            "--model",
-            &self.model,
-            "--output-format",
-            "json",
-            // Intentional: this process runs in the measurement sandbox;
-            // filter_child_env (dropping GH_TOKEN/OPENAI_* etc.) is the blast-radius control.
-            "--dangerously-skip-permissions",
-        ])
-        .current_dir(&self.work_dir)
-        .env_clear()
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        // `--dangerously-skip-permissions` is present only when the caller opted in
+        // (cascadr#11). filter_child_env remains the blast-radius control either way.
+        cmd.args(claude_argv(&self.model, self.skip_permissions))
+            .current_dir(&self.work_dir)
+            .env_clear()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
         // Restore the allowlisted env vars after the clear.
         for (k, v) in &child_env {
@@ -500,6 +543,69 @@ impl Provider for Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- cascadr#11: `--dangerously-skip-permissions` must be opt-in -----------
+    //
+    // The flag disables Claude Code's permission checks for the child process, in
+    // the caller's `work_dir`, with the caller's credentials. It was passed
+    // unconditionally, so every consumer of this crate inherited that posture
+    // whether or not it had a sandbox. These assert on the argv rather than on the
+    // bool, because the bool is not what reaches the process.
+
+    #[test]
+    fn default_construction_does_not_skip_permissions() {
+        let d = ClaudeCliDispatch::new(
+            "sonnet".to_string(),
+            Duration::from_secs(1),
+            PathBuf::from("/tmp"),
+        );
+        assert!(
+            !d.skip_permissions,
+            "the safe posture must be the one you get without asking"
+        );
+        let argv = claude_argv(&d.model, d.skip_permissions);
+        assert!(
+            !argv.iter().any(|a| a == "--dangerously-skip-permissions"),
+            "default argv must not disable permission checks, got {argv:?}"
+        );
+    }
+
+    #[test]
+    fn argv_omits_the_flag_when_not_opted_in() {
+        let argv = claude_argv("haiku", false);
+        assert!(
+            !argv.iter().any(|a| a == "--dangerously-skip-permissions"),
+            "got {argv:?}"
+        );
+    }
+
+    #[test]
+    fn argv_includes_the_flag_only_on_explicit_opt_in() {
+        let argv = claude_argv("haiku", true);
+        assert!(
+            argv.iter().any(|a| a == "--dangerously-skip-permissions"),
+            "an explicit opt-in must still reach the child, got {argv:?}"
+        );
+    }
+
+    #[test]
+    fn argv_is_otherwise_unchanged_by_the_opt_in() {
+        // Guard: proves the tests above discriminate on the one flag rather than
+        // rejecting any argv at all. Everything except that flag is identical.
+        let off = claude_argv("opus", false);
+        let on = claude_argv("opus", true);
+        assert_eq!(
+            off,
+            vec!["-p", "--model", "opus", "--output-format", "json"],
+            "the invariant part of the argv changed"
+        );
+        assert_eq!(
+            on.len(),
+            off.len() + 1,
+            "opting in must add exactly one argument, got {on:?}"
+        );
+        assert_eq!(&on[..off.len()], &off[..], "opting in must only append");
+    }
 
     struct RecordingProvider {
         label: &'static str,

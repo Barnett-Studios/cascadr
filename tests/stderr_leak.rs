@@ -75,11 +75,11 @@ exit 1
 
     let _path_guard = PathGuard::prepend(&tmp.0);
 
-    let dispatch = ClaudeCliDispatch {
-        model: "sonnet".to_string(),
-        timeout: Duration::from_secs(10),
-        work_dir: std::env::current_dir().expect("cwd must be readable"),
-    };
+    let dispatch = ClaudeCliDispatch::new(
+        "sonnet".to_string(),
+        Duration::from_secs(10),
+        std::env::current_dir().expect("cwd must be readable"),
+    );
 
     let result = dispatch.dispatch("prompt").await;
 

@@ -38,11 +38,8 @@ async fn nonzero_exit_with_stdout_is_not_served_as_success_end_to_end() {
     let prev_path = std::env::var("PATH").unwrap_or_default();
     std::env::set_var("PATH", format!("{}:{}", dir.display(), prev_path));
 
-    let dispatch = ClaudeCliDispatch {
-        model: "sonnet".to_string(),
-        timeout: Duration::from_secs(30),
-        work_dir: dir.clone(),
-    };
+    let dispatch =
+        ClaudeCliDispatch::new("sonnet".to_string(), Duration::from_secs(30), dir.clone());
     let result = dispatch.dispatch("review this").await;
 
     // Restore before asserting, so a failure cannot leave PATH poisoned for the

@@ -51,7 +51,10 @@ cascadr = "0.1"
 ```rust
 use cascadr::{ClaudeCliDispatch, OpenAiCompat, Provider, Router};
 
-let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(ClaudeCliDispatch { .. })];
+// `new` keeps the child's permission checks ON. Opt out only under your own sandbox:
+//   ClaudeCliDispatch { skip_permissions: true, ..ClaudeCliDispatch::new(..) }
+let anthropic = ClaudeCliDispatch::new(model, timeout, work_dir);
+let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(anthropic)];
 if let Some(rung) = OpenAiCompat::from_env(timeout) { providers.push(Box::new(rung)); }
 let completion = Router::new(providers).dispatch(prompt).await?;
 ```

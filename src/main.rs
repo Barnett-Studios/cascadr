@@ -59,11 +59,9 @@ async fn main() {
 
     let timeout = Duration::from_secs(120);
     let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let anthropic = ClaudeCliDispatch {
-        model,
-        timeout,
-        work_dir,
-    };
+    // Permission checks stay ON for the binary. `dotclaude`'s own sandboxed
+    // measurement path opts in via the library, where the containment is known.
+    let anthropic = ClaudeCliDispatch::new(model, timeout, work_dir);
     let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(anthropic)];
     if let Some(openai_compat) = OpenAiCompat::from_env(timeout) {
         providers.push(Box::new(openai_compat));
