@@ -241,7 +241,6 @@ pub fn filter_child_env(parent: &BTreeMap<String, String>) -> BTreeMap<String, S
         .collect()
 }
 
-/// Resolve the `claude` binary path via `which`; fall back to `"claude"` (rely on PATH).
 /// Decide the outcome of a finished `claude -p` process.
 ///
 /// **Exit status is authoritative: a non-zero exit is never served as success.**
@@ -284,6 +283,7 @@ pub(crate) fn classify_process_outcome(
     Ok(stdout.to_string())
 }
 
+/// Resolve the `claude` binary path via `which`; fall back to `"claude"` (rely on PATH).
 fn resolve_claude_binary() -> String {
     match std::process::Command::new("which").arg("claude").output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
