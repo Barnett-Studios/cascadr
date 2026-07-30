@@ -14,10 +14,17 @@ fail-open cascade. Library crate + thin CLI.
 ## Fail-open semantics
 
 `Router::dispatch` walks the providers in order and returns the first `Ok(completion)`. A rung that
-is *unavailable* (down, non-2xx, rate-limited, an `anthropic-cli` `is_error` body) maps to
-`ProviderError::Unavailable` and the Router advances to the next rung. Only when **every** rung is
-unavailable does `dispatch` return an error. A genuine task failure (a real completion that happens
-to be wrong) is a completion, not an unavailability — it surfaces downstream, not swallowed.
+is *unavailable* (down, non-2xx, rate-limited, an `anthropic-cli` `is_error` body, or a
+subprocess rung that **exited non-zero**) maps to `ProviderError::Unavailable` and the Router
+advances to the next rung. Only when **every** rung is unavailable does `dispatch` return an error.
+A genuine task failure (a real completion that happens to be wrong) is a completion, not an
+unavailability — it surfaces downstream, not swallowed.
+
+For a subprocess rung the **exit status is authoritative**: a non-zero exit is never an
+`Ok(completion)`, whatever it printed on stdout. Stdout is consulted only to give the failure a more
+precise name (an `is_error` envelope reports `anthropic_cli_is_error` rather than the generic exit
+code). Trusting stdout over the exit code is what made a crashed `claude` serve its panic message as
+a reviewer verdict (cascadr#2).
 
 ## Library API
 

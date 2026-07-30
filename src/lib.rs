@@ -241,6 +241,48 @@ pub fn filter_child_env(parent: &BTreeMap<String, String>) -> BTreeMap<String, S
         .collect()
 }
 
+/// Decide the outcome of a finished `claude -p` process.
+///
+/// **Exit status is authoritative: a non-zero exit is never served as success.**
+///
+/// The previous guard was `!success && stdout.is_empty()` — an AND — so a process
+/// that exited non-zero but printed *anything* fell through to
+/// `classify_anthropic_cli`, which returns `None` for non-envelope text, and was
+/// then returned as `Ok(stdout)` (cascadr#2).
+///
+/// That fails in the dangerous direction for a cascade. `Router` treats `Ok` as a
+/// served answer and stops trying further rungs, so a crashed, OOM-killed or
+/// panicking `claude` produced a truncated or diagnostic string that was consumed
+/// as though it were a reviewer verdict — instead of failing over to the next
+/// provider. Empty stdout was the only shape that failed correctly, and it is the
+/// shape a *clean* failure has; messy failures were the ones let through.
+///
+/// A recognised error envelope still wins over the generic exit-code message,
+/// because it names the cause precisely (`anthropic_cli_is_error` rather than
+/// `reviewer_process_failed_exit_1`).
+///
+/// Note this is deliberately stricter than "reject unless stdout is a recognised
+/// envelope": a *success* envelope arriving with a non-zero exit is also rejected.
+/// Trusting stdout over the exit code is the exact reasoning that produced this
+/// bug, and on the reviewer path failing closed is free — the cascade simply moves
+/// to the next rung.
+pub(crate) fn classify_process_outcome(
+    success: bool,
+    code: Option<i32>,
+    stdout: &str,
+) -> Result<String, ProviderError> {
+    if let Some(reason) = classify_anthropic_cli(stdout) {
+        return Err(ProviderError::Unavailable(reason.to_string()));
+    }
+    if !success {
+        let code = code.unwrap_or(-1);
+        return Err(ProviderError::Unavailable(format!(
+            "reviewer_process_failed_exit_{code}"
+        )));
+    }
+    Ok(stdout.to_string())
+}
+
 /// Resolve the `claude` binary path via `which`; fall back to `"claude"` (rely on PATH).
 fn resolve_claude_binary() -> String {
     match std::process::Command::new("which").arg("claude").output() {
@@ -308,21 +350,10 @@ impl Provider for ClaudeCliDispatch {
         match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-                if !output.status.success() && stdout.is_empty() {
-                    // M1: static reason only — never echo child stderr. ANTHROPIC_*
-                    // env is forwarded to this child (ENV_PREFIX above), so an
-                    // auth-error stderr body could carry key material; only the
-                    // numeric exit code (never free-form process output) may leave
-                    // this function.
-                    let code = output.status.code().unwrap_or(-1);
-                    Err(ProviderError::Unavailable(format!(
-                        "reviewer_process_failed_exit_{code}"
-                    )))
-                } else if let Some(reason) = classify_anthropic_cli(&stdout) {
-                    Err(ProviderError::Unavailable(reason.to_string()))
-                } else {
-                    Ok(stdout)
-                }
+                // M1 still holds: `classify_process_outcome` emits static reasons and
+                // the numeric exit code only — never child stderr, which could carry
+                // ANTHROPIC_* key material from an auth-error body.
+                classify_process_outcome(output.status.success(), output.status.code(), &stdout)
             }
             Ok(Err(e)) => Err(ProviderError::Unavailable(format!(
                 "reviewer I/O error: {e}"
@@ -546,6 +577,91 @@ mod tests {
     fn provider_validate_compat_url_rejects_bad_scheme() {
         assert!(validate_compat_url("ftp://example.com/v1/chat/completions").is_err());
         assert!(validate_compat_url("not-a-url").is_err());
+    }
+
+    #[test]
+    // ── cascadr#2: a failed `claude` call must never be served as success ──────
+    //
+    // The exit guard was `!status.success() && stdout.is_empty()` — an AND. A
+    // process that exited NON-ZERO but printed anything at all fell through to
+    // `classify_anthropic_cli`, which returns `None` for non-envelope text, and
+    // was then returned as `Ok(stdout)`.
+    //
+    // That is the dangerous direction for a cascade: the router treats `Ok` as a
+    // served answer and stops, so a crashed/OOM-killed/panicking `claude` yields a
+    // truncated or diagnostic string that is consumed as if it were a reviewer
+    // verdict, instead of failing over to the next rung.
+    //
+    // Exit status is authoritative here. `classify_anthropic_cli` still wins when
+    // it recognises an error envelope, because it names the failure precisely.
+    fn nonzero_exit_with_non_envelope_stdout_is_not_success() {
+        let out = classify_process_outcome(false, Some(1), "panicked at 'index out of bounds'");
+        assert!(
+            out.is_err(),
+            "a non-zero exit that printed non-envelope stdout must NOT be served as Ok — \
+             got Ok({:?})",
+            out.ok()
+        );
+        match out {
+            Err(ProviderError::Unavailable(r)) => assert_eq!(r, "reviewer_process_failed_exit_1"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    /// Partial JSON is the nastiest shape: it looks structured but is not an
+    /// envelope, so the classifier declines it and the old guard passed it through.
+    #[test]
+    fn nonzero_exit_with_truncated_json_is_not_success() {
+        let out = classify_process_outcome(false, Some(137), r#"{"is_error":fal"#);
+        assert!(
+            out.is_err(),
+            "truncated JSON on a non-zero exit must not be served as Ok"
+        );
+        match out {
+            Err(ProviderError::Unavailable(r)) => assert_eq!(r, "reviewer_process_failed_exit_137"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    /// A recognised error envelope keeps its specific reason even when the exit
+    /// code is non-zero — the precise cause beats the generic one.
+    #[test]
+    fn error_envelope_keeps_its_specific_reason_on_nonzero_exit() {
+        let out =
+            classify_process_outcome(false, Some(1), r#"{"is_error":true,"result":"rate limit"}"#);
+        match out {
+            Err(ProviderError::Unavailable(r)) => assert_eq!(r, "anthropic_cli_is_error"),
+            other => panic!("expected the envelope reason, got {other:?}"),
+        }
+    }
+
+    /// Regression guard for the case the old code DID handle, so the fix cannot
+    /// be mistaken for "reject everything".
+    #[test]
+    fn nonzero_exit_with_empty_stdout_still_reports_the_code() {
+        match classify_process_outcome(false, Some(2), "") {
+            Err(ProviderError::Unavailable(r)) => assert_eq!(r, "reviewer_process_failed_exit_2"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    /// The success path must stay intact: exit 0, non-envelope stdout is the
+    /// ordinary reviewer answer and must be returned verbatim.
+    #[test]
+    fn zero_exit_returns_stdout_verbatim() {
+        let body = r#"{"is_error":false,"result":"looks fine"}"#;
+        assert_eq!(classify_process_outcome(true, Some(0), body).unwrap(), body);
+    }
+
+    /// An unknown exit code (signal death — `status.code()` is None) must still be
+    /// a failure rather than falling through.
+    #[test]
+    fn signal_death_with_output_is_not_success() {
+        let out = classify_process_outcome(false, None, "partial output before SIGKILL");
+        match out {
+            Err(ProviderError::Unavailable(r)) => assert_eq!(r, "reviewer_process_failed_exit_-1"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 
     #[test]
