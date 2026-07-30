@@ -32,7 +32,12 @@ a reviewer verdict (cascadr#2).
 pub trait Provider: Send + Sync {
     async fn dispatch(&self, prompt: &str) -> Result<String, ProviderError>;
 }
-pub struct ClaudeCliDispatch { pub model: String, pub timeout: Duration, pub work_dir: PathBuf }
+pub struct ClaudeCliDispatch {
+    pub model: String, pub timeout: Duration, pub work_dir: PathBuf,
+    pub skip_permissions: bool,          // default false — see below
+}
+impl ClaudeCliDispatch { pub fn new(model: String, timeout: Duration, work_dir: PathBuf) -> Self; }
+pub fn claude_argv(model: &str, skip_permissions: bool) -> Vec<String>;
 pub struct OpenAiCompat { /* … */ }   // OpenAiCompat::from_env(timeout) -> Option<Self>
 pub struct Router { /* … */ }         // Router::new(Vec<Box<dyn Provider>>)
 pub enum ProviderError { Unavailable(String), /* … */ }
@@ -41,6 +46,21 @@ pub fn is_unavailable_status(status: u16) -> bool;
 pub fn classify_anthropic_cli(stdout: &str) -> Option<&'static str>;
 pub fn filter_child_env(parent: &BTreeMap<String,String>) -> BTreeMap<String,String>;
 ```
+
+### The permissions posture is the caller's to choose
+
+`--dangerously-skip-permissions` is passed to the child `claude` **only when
+`skip_permissions` is set**, and it defaults to `false`. The flag disables Claude Code's
+permission checks for the child, in `work_dir`, with the caller's credentials.
+
+That is defensible when the process is already contained — which is what this crate's original
+unconditional use assumed, because it grew out of a sandboxed measurement harness. It is not an
+assumption a library may make on a consumer's behalf: a consumer that merely links cascadr
+inherited the posture silently, in its own cwd, having never asked for it (cascadr#11). Only the
+caller knows the containment story, so only the caller may opt in.
+
+`ClaudeCliDispatch::new` is the supported constructor and yields the safe posture. Prefer it over a
+struct literal — further fields can then be added without breaking you.
 
 `filter_child_env` is the credential-filtering seam beside the Router: only an allowlisted
 set of env vars crosses into the `claude -p` child, so an unrelated host secret cannot leak into

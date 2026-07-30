@@ -86,11 +86,11 @@ printf '{"result":"captured"}'
     std::env::set_var("PROVIDER_TEST_SECRET_SHOULD_BE_DROPPED", "leak-me-not");
     let _path_guard = PathGuard::prepend(&tmp.0);
 
-    let dispatch = ClaudeCliDispatch {
-        model: "sonnet".to_string(),
-        timeout: Duration::from_secs(10),
-        work_dir: std::env::current_dir().expect("cwd must be readable"),
-    };
+    let dispatch = ClaudeCliDispatch::new(
+        "sonnet".to_string(),
+        Duration::from_secs(10),
+        std::env::current_dir().expect("cwd must be readable"),
+    );
 
     let prompt = "SENTINEL-PROMPT-byte-identical-check-\u{1F512}-do-not-rewrite";
     let result = dispatch.dispatch(prompt).await;
@@ -104,8 +104,12 @@ printf '{"result":"captured"}'
 
     let argv =
         std::fs::read_to_string(tmp.0.join("argv.txt")).expect("argv must have been captured");
+    // Deliberately updated for cascadr#11: `--dangerously-skip-permissions` left the
+    // default argv and is now opt-in. This pin tracks what the *library* sends; what
+    // it guards against is the `Provider`/`Router` seam rewriting it in transit. A
+    // change here must always be a change made in `claude_argv` on purpose.
     assert_eq!(
-        argv, "-p\n--model\nsonnet\n--output-format\njson\n--dangerously-skip-permissions\n",
+        argv, "-p\n--model\nsonnet\n--output-format\njson\n",
         "argv must be byte-identical to today's ClaudeCliDispatch plumbing"
     );
 
