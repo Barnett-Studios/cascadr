@@ -5,20 +5,38 @@
 [![Downloads](https://img.shields.io/crates/d/cascadr)](https://crates.io/crates/cascadr)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-**A cost-ordered, fail-open LLM provider cascade — cheapest-capable first, and it never
-proxies the subscription hop.**
+**Executor: routing · Stable** — feature-complete; maintenance only. The scope is finished,
+not abandoned. See the [component map](https://github.com/Barnett-Studios) for how this fits the rest.
+
+## Why this exists
+
+**A subscription cockpit's hop cannot be routed through a proxy without breaking prompt-cache
+integrity.** The cache is keyed on the request as the vendor's own client sends it; put a proxy in
+front and you are no longer sending that request. The cache misses, you pay full input cost on every
+turn, and nothing in the stack tells you — the failure is a silent bill, not an error.
+
+So that rung has to be a direct child-process call to `claude -p`. Not a design preference: a
+constraint on what any router covering that hop is allowed to do.
+
+This is the whole reason cascadr is not simply LiteLLM. LiteLLM, OpenRouter and Portkey are proxies,
+and a proxy is exactly the thing the constraint forbids in that slot. They drop in perfectly *behind*
+the same `Provider` trait as the paid rung — cascadr does not replace them and does not try to. It
+covers the one hop they structurally cannot.
+
+If you are not routing through a subscription cockpit, you do not need cascadr. Use LiteLLM.
+
+**Honest limit:** the invariant is currently held by wiring discipline, not by the type system.
+`Router` accepts any `Vec<Box<dyn Provider>>` and cannot tell a direct hop from a proxying one, so a
+misconfigured provider in that slot breaks the guarantee with no signal —
+[#9](https://github.com/Barnett-Studios/cascadr/issues/9). Until that lands, the paragraph above
+describes an invariant the code relies on rather than one it enforces.
+
+## What it does
 
 cascadr dispatches a prompt down an ordered list of providers, stopping at the first that
 returns a completion and *failing open* past any rung that is unavailable (down, rate-limited,
 errored). This crate implements the `claude -p (anthropic-cli)` and paid `OpenAI-compatible`
-rungs of that cascade (a local-fleet rung can be layered in by a wider cascade, not
-here). Its defining constraint: the `anthropic-cli` hop is invoked
-**directly, never through a network proxy** — proxying a subscription cockpit's credentials
-breaks prompt-cache integrity, so that rung stays a direct child-process call.
-
-That single invariant is why cascadr is *not* just LiteLLM: LiteLLM (or OpenRouter/Portkey)
-drops in as the paid rung behind the same `Provider` trait, but it cannot replace the
-never-proxied subscription hop.
+rungs of that cascade; a local-fleet rung can be layered in by a wider cascade, not here.
 
 > Part of the Barnett Studios agentic-harness toolkit → cxpak · commitward · abproof · **cascadr** · …
 
