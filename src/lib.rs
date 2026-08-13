@@ -446,13 +446,29 @@ impl OpenAiCompat {
 
     /// Build from `LLM_OPENAI_COMPAT_URL` — `None` when unset/blank, so callers
     /// (the engine's Router construction) add this hop only when configured.
+    /// Build from `LLM_OPENAI_COMPAT_URL`, with the model from `LLM_OPENAI_COMPAT_MODEL`.
+    ///
+    /// The model used to be unreachable this way — `new` leaves it `None`, and the payload
+    /// omits the key entirely when it is, which most gateways answer with a 400 (cascadr#10).
+    /// The whole env-configured rung therefore 400'd out of the box unless the gateway
+    /// happened to have a default model, and the cascade reported that as a dead rung.
+    ///
+    /// The model stays optional: a gateway with a configured default is a real deployment,
+    /// and requiring the variable would break it. An empty or whitespace-only value is
+    /// treated as unset rather than sent as `""` — an empty string is how a shell exports a
+    /// variable nobody filled in, and it is a 400 waiting to happen.
     pub fn from_env(timeout: Duration) -> Option<Self> {
         let url = std::env::var("LLM_OPENAI_COMPAT_URL").ok()?;
         let trimmed = url.trim();
         if trimmed.is_empty() {
             return None;
         }
-        Some(Self::new(trimmed.to_string(), timeout))
+        let mut provider = Self::new(trimmed.to_string(), timeout);
+        provider.model = std::env::var("LLM_OPENAI_COMPAT_MODEL")
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        Some(provider)
     }
 }
 
