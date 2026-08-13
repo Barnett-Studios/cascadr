@@ -23,6 +23,12 @@ and a proxy is exactly the thing the constraint forbids in that slot. They drop 
 the same `Provider` trait as the paid rung — cascadr does not replace them and does not try to. It
 covers the one hop they structurally cannot.
 
+**Precisely, for the paid rung:** point `LLM_OPENAI_COMPAT_URL` at a gateway that **injects the
+provider key** — cascadr sends no `Authorization` header, because this process never holds provider
+credentials. A provider API in that slot (`api.openai.com`, OpenRouter's own endpoint) answers 401,
+which the cascade reports as `http_4xx` and fails past. Set `LLM_OPENAI_COMPAT_MODEL` too unless the
+gateway has a default; without a model most gateways answer 400 (cascadr#10).
+
 If you are not routing through a subscription cockpit, you do not need cascadr. Use LiteLLM.
 
 **Honest limit:** the invariant is currently held by wiring discipline, not by the type system.
