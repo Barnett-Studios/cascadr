@@ -31,6 +31,27 @@ advances to the next rung. Only when **every** rung is unavailable does `dispatc
 A genuine task failure (a real completion that happens to be wrong) is a completion, not an
 unavailability — it surfaces downstream, not swallowed.
 
+### Availability failover, not a quality router
+
+**cascadr never inspects a completion's content, and never escalates because an answer was
+poor.** A reachable rung's `Ok` ends the cascade. That is a scope, not an oversight: OpenRouter's
+price/quality tiers and LiteLLM's model-group routing decide *which* model should answer; cascadr
+decides *whether the cheap hop answered at all*, and the one hop it exists for
+([`ClaudeCliDispatch`](#the-cache-integrity-invariant-why-the-router-cant-be-a-proxy)) is the one
+those tools structurally cannot cover.
+
+`ProviderError::Failed` is the escalation-**suppression** signal: a reachable backend produced a
+result that is not worth retrying elsewhere, so the Router returns it instead of advancing. Only
+`OpenAiCompat` raises it today, on a payload that will not serialize — correctly, since no other
+rung would serialize it either.
+
+**A caller that does want to gate on quality already can, by composition:** implement `Provider`
+as a wrapper that delegates, scores the completion, and returns `Ok` or `Failed`. Placed after a
+rung it ends the cascade; the trait is public and the Router honours the variant from any
+implementation, which `a_caller_can_force_escalation_by_composition` proves through the public
+surface. No hook is shipped for it because a wrapper is the hook, and the scoring function is the
+caller's — cascadr has no basis for one.
+
 ## One completion shape, whichever rung answers
 
 `Ok(String)` is the **completion text**, never a provider's transport envelope. The

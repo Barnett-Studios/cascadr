@@ -47,6 +47,14 @@ and spawns. [#9](https://github.com/Barnett-Studios/cascadr/issues/9) proposed a
 capability flag on the trait for that case; it is not implemented here, because a flag defaulting to
 "I do not proxy" is a promise from exactly the provider whose promise is in question.
 
+**Scope, stated because it is easy to assume otherwise:** cascadr is **availability failover, not
+a quality router**. It never inspects a completion's content — a reachable rung's answer ends the
+cascade, however poor it is. OpenRouter and LiteLLM route on capability and price; cascadr decides
+whether the *free* hop answered, and covers the one hop they structurally cannot. A caller that
+wants to reject an answer and force escalation implements `Provider` as a scoring wrapper and
+returns `ProviderError::Failed`; the Router honours that from any implementation
+([#3](https://github.com/Barnett-Studios/cascadr/issues/3)).
+
 ## What it does
 
 cascadr dispatches a prompt down an ordered list of providers, stopping at the first that

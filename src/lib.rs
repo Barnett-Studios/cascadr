@@ -1090,6 +1090,63 @@ mod tests {
         );
     }
 
+    /// cascadr#3's option (a) — "a rung's output can be rejected and escalation forced by
+    /// the caller" — is available today by composition, and this proves it through the
+    /// public surface rather than asserting it in prose.
+    ///
+    /// A wrapper that delegates, scores, and converts an unacceptable completion into
+    /// `Failed` stops the cascade at that rung. Nothing is shipped for this: the wrapper IS
+    /// the hook, and the scoring function belongs to the caller — cascadr has no basis for
+    /// one, since it never looks at content.
+    #[tokio::test]
+    async fn a_caller_can_force_escalation_by_composition() {
+        struct QualityGate<P: Provider> {
+            inner: P,
+            min_len: usize,
+        }
+        #[async_trait::async_trait]
+        impl<P: Provider> Provider for QualityGate<P> {
+            async fn dispatch(&self, prompt: &str) -> Result<String, ProviderError> {
+                let text = self.inner.dispatch(prompt).await?;
+                if text.len() < self.min_len {
+                    // Not `Unavailable`: the rung answered. Retrying elsewhere is the
+                    // caller's call, and this caller has decided the answer settles it.
+                    return Err(ProviderError::Failed("completion too short".to_string()));
+                }
+                Ok(text)
+            }
+            fn label(&self) -> &'static str {
+                "quality-gate"
+            }
+        }
+
+        let gated = QualityGate {
+            inner: RecordingProvider::new("cheap", Ok("no".to_string())),
+            min_len: 20,
+        };
+        let expensive = RecordingProvider::new("expensive", Ok("must-not-be-reached".to_string()));
+        let router = Router::new(vec![Box::new(gated), Box::new(expensive)]);
+        assert_eq!(
+            router.dispatch("prompt").await,
+            Err(ProviderError::Failed("completion too short".to_string())),
+            "a caller's own gate must be able to end the cascade on content — the Router \
+             honours Failed from ANY implementation, not only the two in this crate"
+        );
+
+        // The control: the same gate, an answer that passes it, and the cascade completes
+        // normally. Without this a gate that rejected everything satisfies the assertion
+        // above while making the cheap rung useless.
+        let gated_ok = QualityGate {
+            inner: RecordingProvider::new("cheap", Ok("a long enough completion".to_string())),
+            min_len: 20,
+        };
+        let router = Router::new(vec![Box::new(gated_ok)]);
+        assert_eq!(
+            router.dispatch("prompt").await,
+            Ok("a long enough completion".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn provider_router_aggregates_reasons_when_all_unavailable() {
         let first = RecordingProvider::new(
