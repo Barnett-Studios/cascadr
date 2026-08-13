@@ -330,7 +330,37 @@ pub(crate) fn classify_process_outcome(
             "reviewer_process_failed_exit_{code}"
         )));
     }
-    Ok(stdout.to_string())
+    Ok(completion_text(stdout))
+}
+
+/// The completion itself, unwrapped from `claude -p --output-format json`'s envelope.
+///
+/// `Provider::dispatch` promises "the completion text", and the openai-compat rung already
+/// delivered exactly that (`choices[0].message.content`) while this one returned the whole
+/// `{"result": "…", "is_error": false, …}` object. A consumer therefore got a bare string or
+/// a JSON envelope depending on which rung answered — and a mid-cascade failover changed the
+/// shape underneath it (cascadr#8).
+///
+/// This is not a new rule, it is the same rule moved to the layer that owns it: attestr's
+/// `reviewer::extract_text` unwraps `result` then `text` and otherwise passes the string
+/// through, because the consumer had to compensate for exactly this. Keeping the two in step
+/// matters more than the choice of keys — an unwrapper here that disagreed with the one there
+/// would be its own defect. Consumers still holding that compensation are unaffected: an
+/// already-unwrapped string has neither key, which is its documented passthrough case.
+///
+/// Fails open, deliberately. Anything that is not an envelope with a string under those keys
+/// is returned untouched, because a completion is a completion and the alternative — refusing
+/// a shape we did not anticipate — turns a served answer into a cascade failure.
+fn completion_text(stdout: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(stdout) else {
+        return stdout.to_string();
+    };
+    for key in ["result", "text"] {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            return s.to_string();
+        }
+    }
+    stdout.to_string()
 }
 
 /// Resolve the `claude` binary path via `which`; fall back to `"claude"` (rely on PATH).
@@ -751,12 +781,67 @@ mod tests {
         }
     }
 
-    /// The success path must stay intact: exit 0, non-envelope stdout is the
-    /// ordinary reviewer answer and must be returned verbatim.
+    /// The success path must stay intact: exit 0 is the ordinary reviewer answer.
+    ///
+    /// It used to assert the whole envelope came back verbatim, which is what cascadr#8
+    /// was — the openai rung returned bare content for the same call. What must survive
+    /// verbatim is the *completion*, not the transport around it.
     #[test]
-    fn zero_exit_returns_stdout_verbatim() {
+    fn zero_exit_returns_the_completion() {
         let body = r#"{"is_error":false,"result":"looks fine"}"#;
-        assert_eq!(classify_process_outcome(true, Some(0), body).unwrap(), body);
+        assert_eq!(
+            classify_process_outcome(true, Some(0), body).unwrap(),
+            "looks fine"
+        );
+    }
+
+    /// Shape parity across the rungs, asserted as an equality rather than twice against a
+    /// literal: the claim is that the two agree, and two separate assertions can both be
+    /// updated to a new-but-still-divergent pair without anyone noticing.
+    #[test]
+    fn both_rungs_yield_the_same_shape_for_the_same_completion() {
+        const COMPLETION: &str = "the reviewer's actual answer";
+        let claude = classify_process_outcome(
+            true,
+            Some(0),
+            &serde_json::json!({"is_error": false, "result": COMPLETION}).to_string(),
+        )
+        .expect("a clean claude run is a completion");
+        let openai = extract_completion(
+            &serde_json::json!({"choices": [{"message": {"content": COMPLETION}}]}).to_string(),
+        )
+        .expect("a well-formed compat body is a completion");
+        assert_eq!(
+            claude, openai,
+            "a mid-cascade failover must not change the payload shape under the consumer"
+        );
+        assert_eq!(claude, COMPLETION);
+    }
+
+    /// The fail-open half. Anything that is not a recognised envelope is a completion as-is
+    /// — including a bare string a consumer's own unwrapper already extracted, which is why
+    /// moving the unwrap into this crate does not double-unwrap for them.
+    #[test]
+    fn a_non_envelope_completion_passes_through_untouched() {
+        for raw in [
+            "plain prose from a model that was not asked for json",
+            r#"{"choices":[{"message":{"content":"an unrelated shape"}}]}"#,
+            r#"{"result":{"nested":"not a string"}}"#,
+            "",
+        ] {
+            assert_eq!(classify_process_outcome(true, Some(0), raw).unwrap(), raw);
+        }
+    }
+
+    /// `text` as well as `result`, because attestr's `extract_text` unwraps both and the two
+    /// unwrappers disagreeing would be its own defect.
+    #[test]
+    fn the_text_key_is_unwrapped_too() {
+        let body = r#"{"text":"answered under the other key"}"#;
+        assert_eq!(
+            classify_process_outcome(true, Some(0), body).unwrap(),
+            "answered under the other key"
+        );
     }
 
     /// An unknown exit code (signal death — `status.code()` is None) must still be
