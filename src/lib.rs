@@ -296,6 +296,43 @@ pub fn filter_child_env(parent: &BTreeMap<String, String>) -> BTreeMap<String, S
         .collect()
 }
 
+/// The env var redirecting the subscription hop away from Anthropic's own endpoint, if
+/// any. `None` means the hop is direct.
+///
+/// "Never proxy the subscription hop" is the cache-integrity invariant this crate exists
+/// for (ADR-0028/0031), and until now it rested entirely on wiring discipline — nothing
+/// could tell a direct `claude -p` from one pointed at a rewriting proxy (cascadr#9).
+///
+/// This is where the invariant is actually breakable in practice. `ENV_PREFIX` forwards
+/// every `ANTHROPIC_*` var to the child by design, so one `ANTHROPIC_BASE_URL` in the
+/// parent environment sends `claude -p` through LiteLLM — same argv, same stdin, and the
+/// prompt cache gone, with nothing anywhere reporting it.
+///
+/// The rule is "an allowlisted var that names where the request goes", not a list of three
+/// names: any `ANTHROPIC_*_BASE_URL` (plus the older `ANTHROPIC_API_URL` alias). A list
+/// would be right today and silently short the day Claude Code adds a fourth. Under-flagging
+/// is the safe direction here and stays consistent with the rest of this module — a redirect
+/// var named something else is missed, never a direct hop refused.
+///
+/// An exported-but-empty value is not a redirect. That is how a shell says "nobody filled
+/// this in", and refusing the subscription rung over it would cost the free hop for a
+/// variable carrying no destination.
+pub fn subscription_redirect(env: &BTreeMap<String, String>) -> Option<&'static str> {
+    env.iter()
+        .find(|(k, v)| {
+            !v.trim().is_empty()
+                && k.starts_with("ANTHROPIC_")
+                && (k.ends_with("_BASE_URL") || k.as_str() == "ANTHROPIC_API_URL")
+        })
+        // The NAME only, never the value: the value is a url, and M1 keeps urls out of
+        // every reason this crate emits.
+        .map(|(k, _)| match k.as_str() {
+            "ANTHROPIC_BASE_URL" => "subscription_hop_proxied_anthropic_base_url",
+            "ANTHROPIC_API_URL" => "subscription_hop_proxied_anthropic_api_url",
+            _ => "subscription_hop_proxied",
+        })
+}
+
 /// Decide the outcome of a finished `claude -p` process.
 ///
 /// **Exit status is authoritative: a non-zero exit is never served as success.**
@@ -385,6 +422,16 @@ impl Provider for ClaudeCliDispatch {
         // Collect parent env into a BTreeMap for deterministic order before filtering.
         let parent_env: BTreeMap<String, String> = std::env::vars().collect();
         let child_env = filter_child_env(&parent_env);
+
+        // Refuse before spawning: a proxied subscription hop is not a cheaper hop, it is a
+        // destroyed prompt cache that answers anyway — the one failure this crate is
+        // supposed to make impossible, and the one that looks like success (cascadr#9).
+        //
+        // `Unavailable`, so the Router falls through to the next rung and prints the reason
+        // rather than the whole cascade dying. Closed on the invariant, open on the cascade.
+        if let Some(reason) = subscription_redirect(&child_env) {
+            return Err(ProviderError::Unavailable(reason.to_string()));
+        }
 
         let mut cmd = tokio::process::Command::new(&claude);
         // `--dangerously-skip-permissions` is present only when the caller opted in
@@ -595,6 +642,91 @@ impl Provider for Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- cascadr#9: the subscription hop refuses a proxy -----------------------
+    //
+    // These assert on `subscription_redirect` over an env map rather than on a spawned
+    // `claude`, for the reason `claude_argv` was extracted: an invariant only observable by
+    // running the thing is one that regresses unnoticed. The map is the child's, post
+    // `filter_child_env`, which is what actually reaches the process.
+
+    fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_direct_hop_is_not_flagged() {
+        // The control. Without it a function hard-wired to Some(_) passes every assertion
+        // below while refusing the free rung on every call.
+        let clean = env(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/x"),
+            ("ANTHROPIC_API_KEY", "sk-not-a-url"),
+            ("ANTHROPIC_MODEL", "sonnet"),
+        ]);
+        assert_eq!(
+            subscription_redirect(&clean),
+            None,
+            "an ordinary environment must leave the subscription hop alone — this rung is \
+             the free one, and refusing it wrongly costs money on every call"
+        );
+    }
+
+    #[test]
+    fn a_base_url_redirect_refuses_the_hop() {
+        for var in [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_API_URL",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "ANTHROPIC_VERTEX_BASE_URL",
+        ] {
+            let e = env(&[("PATH", "/usr/bin"), (var, "http://127.0.0.1:4000")]);
+            let reason = subscription_redirect(&e)
+                .unwrap_or_else(|| panic!("{var} points the hop somewhere else and must fire"));
+            assert!(
+                reason.starts_with("subscription_hop_proxied"),
+                "{var} gave {reason}"
+            );
+            assert!(
+                !reason.contains("127.0.0.1") && !reason.contains("http"),
+                "M1: the reason must name the variable, never its url — {var} gave {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_redirect_var_is_not_a_redirect() {
+        // An exported-but-empty var is a shell saying "nobody filled this in". Treating it
+        // as a proxy would forfeit the subscription rung over a variable with no
+        // destination in it.
+        let e = env(&[("PATH", "/usr/bin"), ("ANTHROPIC_BASE_URL", "   ")]);
+        assert_eq!(subscription_redirect(&e), None);
+    }
+
+    #[test]
+    fn the_guard_reads_the_env_the_child_actually_gets() {
+        // `filter_child_env` forwards every ANTHROPIC_* var by design, which is precisely
+        // why this hole exists — and why the guard must run on the filtered map. A guard
+        // reading a map the child never sees is the vacuous kind.
+        let parent = env(&[
+            ("PATH", "/usr/bin"),
+            ("ANTHROPIC_BASE_URL", "https://proxy.example/v1"),
+            ("GH_TOKEN", "dropped"),
+        ]);
+        let child = filter_child_env(&parent);
+        assert!(
+            child.contains_key("ANTHROPIC_BASE_URL"),
+            "the allowlist forwards it — if this ever stops being true the guard has moved, \
+             not become unnecessary"
+        );
+        assert_eq!(
+            subscription_redirect(&child),
+            Some("subscription_hop_proxied_anthropic_base_url")
+        );
+    }
 
     // ---- cascadr#11: `--dangerously-skip-permissions` must be opt-in -----------
     //

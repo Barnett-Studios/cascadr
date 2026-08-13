@@ -25,11 +25,21 @@ covers the one hop they structurally cannot.
 
 If you are not routing through a subscription cockpit, you do not need cascadr. Use LiteLLM.
 
-**Honest limit:** the invariant is currently held by wiring discipline, not by the type system.
-`Router` accepts any `Vec<Box<dyn Provider>>` and cannot tell a direct hop from a proxying one, so a
-misconfigured provider in that slot breaks the guarantee with no signal —
-[#9](https://github.com/Barnett-Studios/cascadr/issues/9). Until that lands, the paragraph above
-describes an invariant the code relies on rather than one it enforces.
+**Enforced where it is breakable:** the `anthropic-cli` hop refuses to run when the environment
+reaching the child redirects the Anthropic endpoint — any `ANTHROPIC_*_BASE_URL` (or the older
+`ANTHROPIC_API_URL`). That is the realistic way this invariant gets broken in practice: cascadr
+forwards every `ANTHROPIC_*` var to the child by design, so one `ANTHROPIC_BASE_URL` sends
+`claude -p` through LiteLLM with identical argv and identical stdin, and nothing reports it. The hop
+now returns `Unavailable("subscription_hop_proxied_…")` **before spawning anything**, and the
+cascade falls through to a paid rung. A test asserts no child process is created, not merely that
+the answer is discarded — by the time a request has left, the cache is already gone.
+
+**Honest limit:** `Router` still accepts any `Vec<Box<dyn Provider>>` and cannot tell a direct hop
+from a proxying one, so a *third-party* provider that proxies the subscription while occupying the
+first slot is not detected — the check above lives in `ClaudeCliDispatch`, the hop this crate owns
+and spawns. [#9](https://github.com/Barnett-Studios/cascadr/issues/9) proposed a declared
+capability flag on the trait for that case; it is not implemented here, because a flag defaulting to
+"I do not proxy" is a promise from exactly the provider whose promise is in question.
 
 ## What it does
 
