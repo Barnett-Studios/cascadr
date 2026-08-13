@@ -159,7 +159,12 @@ async fn curl_post_json(
     ])
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
+    .stderr(std::process::Stdio::piped())
+    // Every path out of this function except the timeout branch used to drop the Child
+    // without killing it — `child.id()` returning None, a stdin write failing, the
+    // caller cancelling the future — leaving a detached curl running (cascadr#4). curl
+    // spawns nothing, so killing the direct child is the whole job here.
+    .kill_on_drop(true);
 
     let mut child = cmd.spawn().map_err(|_| conn_failure())?;
 
@@ -359,7 +364,13 @@ impl Provider for ClaudeCliDispatch {
             .env_clear()
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            // The backstop for every exit that is not the timeout branch: a failed
+            // `child.id()`, a failed stdin write, a cancelled future. Without it the Child
+            // was dropped un-killed and a `claude -p` kept running detached, burning
+            // subscription tokens past the point cascadr had given up on it (cascadr#4).
+            // It kills the direct child only — see `kill_process_group` for descendants.
+            .kill_on_drop(true);
 
         // Restore the allowlisted env vars after the clear.
         for (k, v) in &child_env {
@@ -382,10 +393,21 @@ impl Provider for ClaudeCliDispatch {
 
         // Write prompt to stdin; dropping the handle signals EOF to claude.
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .map_err(|e| ProviderError::Unavailable(format!("reviewer stdin write: {e}")))?;
+            if let Err(e) = stdin.write_all(prompt.as_bytes()).await {
+                // kill_on_drop covers `claude` itself, but only itself. By this point the
+                // process group exists and claude may already have spawned tools of its
+                // own, so take the group while the pid is still in hand. Immediate
+                // SIGKILL, not the timeout branch's TERM-then-KILL: nothing here has been
+                // given a request to finish, so there is nothing to shut down gracefully
+                // and no reason to make an error path wait 5s.
+                #[cfg(unix)]
+                {
+                    let _ = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+                }
+                return Err(ProviderError::Unavailable(format!(
+                    "reviewer stdin write: {e}"
+                )));
+            }
             // drop = EOF
         }
 

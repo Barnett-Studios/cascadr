@@ -26,6 +26,23 @@ precise name (an `is_error` envelope reports `anthropic_cli_is_error` rather tha
 code). Trusting stdout over the exit code is what made a crashed `claude` serve its panic message as
 a reviewer verdict (cascadr#2).
 
+## Subprocess lifetime
+
+**A rung that has given up does not leave its process running.** Every spawned command sets
+`kill_on_drop`, so a dispatch that returns `Err` — or a future the caller simply drops — takes its
+child with it. Only the timeout branch used to kill anything, so a failed `child.id()`, a failed
+stdin write, or a cancellation left a detached `claude -p` spending subscription tokens with nobody
+left to read its answer (cascadr#4).
+
+The `anthropic-cli` rung runs its child in **its own process group**, and kills the whole group on
+both the timeout path (SIGTERM, then SIGKILL after 5s) and the stdin-write failure (SIGKILL
+immediately — nothing there has been given a request to finish, so there is nothing to shut down
+gracefully and no reason to make an error path wait).
+
+Stated residual: `kill_on_drop` signals the direct child only. If the future is **dropped** — rather
+than returning through one of those two paths — after `claude` has spawned tools of its own, those
+descendants are reparented rather than killed. The token-spending process itself always dies.
+
 ## Library API
 
 ```rust
