@@ -11,6 +11,17 @@ fail-open cascade. Library crate + thin CLI.
 > *paid* rungs, but it **cannot** replace the never-proxied subscription hop. This is the one part
 > of the Router that stays ours; everything else is swappable.
 
+`ClaudeCliDispatch` enforces its half: if the child's environment carries an
+`ANTHROPIC_*_BASE_URL` (or `ANTHROPIC_API_URL`) with a non-empty value, `dispatch` returns
+`Unavailable("subscription_hop_proxied_…")` **without spawning**, and the Router advances to the
+next rung. The reason names the variable, never its value — a url never enters a classified reason.
+An exported-but-empty value is not a redirect.
+
+The rule is "an allowlisted var that names where the request goes", not a fixed list of names, and
+it under-flags rather than over-flags: a redirect var named something else is missed; a direct hop is
+never refused. What it does **not** cover is a third-party `Provider` in the first slot that proxies
+the subscription itself — the check lives in the hop this crate spawns.
+
 ## Fail-open semantics
 
 `Router::dispatch` walks the providers in order and returns the first `Ok(completion)`. A rung that
