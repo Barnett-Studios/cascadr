@@ -1,6 +1,6 @@
 [package]
 name = "cascadr"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Cost-ordered fail-open LLM provider cascade — cheapest-capable first, never proxies the subscription hop"
 license = "MIT OR Apache-2.0"

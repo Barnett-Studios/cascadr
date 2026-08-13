@@ -96,9 +96,12 @@ printf '{"result":"captured"}'
     let result = dispatch.dispatch(prompt).await;
     std::env::remove_var("PROVIDER_TEST_SECRET_SHOULD_BE_DROPPED");
 
+    // The completion, not the envelope the stub printed it in — dispatch unwraps
+    // `{"result": …}` so both rungs hand a consumer the same shape (cascadr#8). The
+    // round-trip is still what is asserted: "captured" is what the stub chose to say.
     assert_eq!(
         result,
-        Ok("{\"result\":\"captured\"}".to_string()),
+        Ok("captured".to_string()),
         "anthropic-cli dispatch must round-trip through the fake claude script"
     );
 

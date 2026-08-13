@@ -20,6 +20,20 @@ advances to the next rung. Only when **every** rung is unavailable does `dispatc
 A genuine task failure (a real completion that happens to be wrong) is a completion, not an
 unavailability — it surfaces downstream, not swallowed.
 
+## One completion shape, whichever rung answers
+
+`Ok(String)` is the **completion text**, never a provider's transport envelope. The
+`anthropic-cli` rung unwraps `{"result": …}` (and `{"text": …}`) from
+`claude -p --output-format json`; the openai-compat rung already returned
+`choices[0].message.content`. Before cascadr#8 a consumer got a JSON envelope or a bare string
+depending on which rung answered, and a mid-cascade failover changed the shape underneath it.
+
+The unwrap fails open: anything that is not a recognised envelope with a string under those keys
+is the completion as-is. That includes a string a consumer's own unwrapper already extracted, so
+a consumer still compensating for the old divergence is unaffected — those keys are simply absent.
+The keys match attestr's `reviewer::extract_text`, which existed *because* of this divergence;
+two unwrappers that disagreed would be their own defect.
+
 For a subprocess rung the **exit status is authoritative**: a non-zero exit is never an
 `Ok(completion)`, whatever it printed on stdout. Stdout is consulted only to give the failure a more
 precise name (an `is_error` envelope reports `anthropic_cli_is_error` rather than the generic exit
