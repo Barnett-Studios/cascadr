@@ -30,6 +30,13 @@ case "$url" in
   *ratelimit/*) printf '{"error":"slow down"}\n429' ;;
   *boom/*)      printf '{"error":"upstream"}\n500' ;;
   *garbage/*)   printf 'not json at all\n200' ;;
+  # No `-w` status line at all. The ONLY case that reaches `curl_post_json`'s own
+  # `malformed` closure — every other failing case is classified before or after it
+  # (`classify_http_status`, or `extract_completion`'s identically-worded reason). Without
+  # this arm the M1 loop below asserts over the reasons these cases happen to produce
+  # rather than the ones the code can emit, and a `format!("… {url}")` in that branch
+  # ships with the guard green. Measured: it did.
+  *nostatus/*)  printf 'a body and nothing else' ;;
   *refused/*)   echo 'curl: (7) Failed to connect' >&2; exit 7 ;;
   *hang/*)      sleep 120 ;;
   *)            printf '{"unexpected":"url"}\n418' ;;
@@ -73,6 +80,7 @@ async fn the_compat_rung_classifies_every_shape_the_wire_can_return() {
     // The implementation waits `timeout + 2s` on the child before killing it, so this case
     // costs ~3s and no more — the fake curl sleeps for 120.
     let hang = dispatch_case("hang", Duration::from_secs(1)).await;
+    let nostatus = dispatch_case("nostatus", long).await;
 
     std::env::set_var("PATH", prev_path);
     let _ = std::fs::remove_dir_all(&dir);
@@ -95,11 +103,17 @@ async fn the_compat_rung_classifies_every_shape_the_wire_can_return() {
         "a curl that exits non-zero is an unavailable rung, not an empty completion"
     );
     assert_eq!(reason(&hang), "conn_refused_or_timeout");
+    assert_eq!(
+        reason(&nostatus),
+        "openai_compat_malformed_response",
+        "stdout with no status line is the one shape that fails inside curl_post_json \
+         itself — the branch the M1 loop below could not otherwise see"
+    );
 
     // M1: no reason above may carry the url, the host, or the response body. Asserted over
     // the whole set rather than case by case, because the leak this guards is one careless
     // `format!` in a branch nobody re-read.
-    for r in [&ratelimit, &boom, &garbage, &refused, &hang] {
+    for r in [&ratelimit, &boom, &garbage, &refused, &hang, &nostatus] {
         let text = reason(r);
         for secret in [
             "127.0.0.1",

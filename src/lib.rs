@@ -444,9 +444,9 @@ impl OpenAiCompat {
         }
     }
 
-    /// Build from `LLM_OPENAI_COMPAT_URL` — `None` when unset/blank, so callers
-    /// (the engine's Router construction) add this hop only when configured.
     /// Build from `LLM_OPENAI_COMPAT_URL`, with the model from `LLM_OPENAI_COMPAT_MODEL`.
+    /// `None` when the url is unset or blank, so callers (the engine's Router
+    /// construction) add this hop only when it is configured.
     ///
     /// The model used to be unreachable this way — `new` leaves it `None`, and the payload
     /// omits the key entirely when it is, which most gateways answer with a 400 (cascadr#10).
