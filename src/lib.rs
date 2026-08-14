@@ -74,14 +74,53 @@ pub fn is_unavailable_status(status: u16) -> bool {
 
 /// Classify a `claude -p --output-format json` stdout body. Returns a static classified
 /// reason when the body is a well-formed error envelope (exit-0 rate-limit / overload —
-/// subscription exhaustion), else None. Mirrors the standard `is_error` envelope
-/// handling. NEVER echoes the body or any secret — static reason only (M1).
+/// subscription exhaustion), else None. NEVER echoes the body or any secret — static
+/// reason only (M1).
+///
+/// `is_error: true` is not one condition. Measured, from a real `claude -p --output-format
+/// json --model <typo>` run, exit 0:
+///
+/// ```json
+/// {"is_error":true,"api_error_status":404,"terminal_reason":"api_error","subtype":"success",
+///  "result":"There's an issue with the selected model …","total_cost_usd":0, …}
+/// ```
+///
+/// A model-name typo and an exhausted subscription arrive in the same shape, and this
+/// function used to answer `anthropic_cli_is_error` for both. That single token is what a
+/// consumer keys its tier policy on: the assembly this crate was extracted from raises
+/// `Max20Exhausted` on it and **latches** — skipping every remaining `claude-cli` rung and
+/// dropping the whole cascade onto the paid one — so a typo in a model name reads as
+/// subscription exhaustion and abandons the free tier for the rest of the attempt loop.
+///
+/// The envelope carries `api_error_status`, and this crate already owns the status taxonomy
+/// ([`classify_http_status`]), so the reason now names the status when the envelope states
+/// one. **Routing is unchanged**: every classified envelope is still `Unavailable` and still
+/// fails over. Whether some of these should instead be [`ProviderError::Failed`] —
+/// escalation-suppression — is a policy question this crate cannot answer from the status
+/// alone, because `Failed` means *would reproduce on every rung* and a 404 for a model this
+/// rung does not have says nothing about the next rung's models (cascadr#6).
+///
+/// An envelope with no `api_error_status`, or one outside the taxonomy, keeps the generic
+/// reason. Fail-open: an unrecognised error is still an error, and the cascade still moves.
 pub fn classify_anthropic_cli(stdout: &str) -> Option<&'static str> {
     let v: Value = serde_json::from_str(stdout).ok()?;
-    match v.get("is_error") {
-        Some(Value::Bool(true)) => Some("anthropic_cli_is_error"),
-        _ => None,
+    if v.get("is_error") != Some(&Value::Bool(true)) {
+        return None;
     }
+    let status = v.get("api_error_status").and_then(Value::as_u64);
+    // Delegates *which* status falls in which bucket to the single table above and maps only
+    // the names, so the two paths cannot disagree about 429 or about the 4xx/5xx boundary.
+    // `anthropic_cli_reason_covers_every_http_bucket` fails if that table grows a bucket this
+    // match does not name.
+    let bucket = status
+        .and_then(|s| u16::try_from(s).ok())
+        .and_then(classify_http_status);
+    Some(match bucket {
+        Some("http_429") => "anthropic_cli_http_429",
+        Some("http_5xx") => "anthropic_cli_http_5xx",
+        Some("http_4xx") => "anthropic_cli_http_4xx",
+        _ => "anthropic_cli_is_error",
+    })
 }
 
 /// M2 SSRF guard: mirrors Python's `_validate_compat_url` exactly — https is
@@ -1031,6 +1070,89 @@ mod tests {
             classify_anthropic_cli(r#"{"is_error":true,"result":"rate limit"}"#),
             Some("anthropic_cli_is_error")
         );
+    }
+
+    /// The shape a real `claude -p --output-format json` error envelope has, hand-authored
+    /// from a measured run (`--model <typo>`, exit 0) with the session/uuid/usage noise
+    /// dropped. The fields that matter are `is_error` and `api_error_status`.
+    fn cli_error_envelope(status: Option<u16>) -> String {
+        let mut v = serde_json::json!({
+            "is_error": true,
+            "terminal_reason": "api_error",
+            // Measured, and worth keeping in the fixture: the envelope says `success` here
+            // while `is_error` is true, so `subtype` is not the discriminator it looks like.
+            "subtype": "success",
+            "result": "diagnostic prose",
+            "total_cost_usd": 0,
+        });
+        if let Some(s) = status {
+            v["api_error_status"] = serde_json::json!(s);
+        }
+        v.to_string()
+    }
+
+    #[test]
+    fn an_error_envelope_reports_the_status_it_carries() {
+        // The defect: a model-name typo (404) and an exhausted subscription both answered
+        // `anthropic_cli_is_error`, and a consumer that latches its tier policy on that token
+        // abandons the free rungs on a config error.
+        for (status, want) in [
+            (404, "anthropic_cli_http_4xx"),
+            (400, "anthropic_cli_http_4xx"),
+            (429, "anthropic_cli_http_429"),
+            (503, "anthropic_cli_http_5xx"),
+        ] {
+            assert_eq!(
+                classify_anthropic_cli(&cli_error_envelope(Some(status))),
+                Some(want),
+                "status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_envelope_without_a_status_keeps_the_generic_reason() {
+        // Fail-open, and the reason this is a separate test: exhaustion envelopes are the
+        // ones this crate exists to fail over on, and no measurement here says they carry
+        // `api_error_status`. An envelope that does not state a status, or states one outside
+        // the taxonomy, must still classify — narrowing to "only a known status is an error"
+        // would strand the free rung on the shape nobody has sampled.
+        for body in [
+            cli_error_envelope(None),
+            cli_error_envelope(Some(200)),
+            cli_error_envelope(Some(999)),
+            r#"{"is_error":true,"result":"rate limit"}"#.to_string(),
+        ] {
+            assert_eq!(
+                classify_anthropic_cli(&body),
+                Some("anthropic_cli_is_error"),
+                "body {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_cli_reason_covers_every_http_bucket() {
+        // Drift, so the enumeration is deliberately SHARED with the table under test — the
+        // point is that the two paths agree, not that either is complete. Sweeping the u16
+        // domain rather than listing the buckets means a new one added to
+        // `classify_http_status` shows up here instead of falling silently into the generic
+        // arm, which is where the 4xx/5xx split would quietly stop being reported.
+        use std::collections::BTreeSet;
+        let buckets: BTreeSet<&str> = (0..=1023u16).filter_map(classify_http_status).collect();
+        assert!(!buckets.is_empty(), "the status table classifies nothing");
+        for bucket in &buckets {
+            let status = (0..=1023u16)
+                .find(|s| classify_http_status(*s) == Some(bucket))
+                .expect("a bucket the sweep produced has a status that produces it");
+            let got = classify_anthropic_cli(&cli_error_envelope(Some(status)));
+            assert_eq!(
+                got,
+                Some(format!("anthropic_cli_{bucket}").as_str()),
+                "status {status} classifies as {bucket} over HTTP but {got:?} in an envelope \
+                 — a bucket this crate knows about is being reported generically"
+            );
+        }
     }
 
     #[test]
