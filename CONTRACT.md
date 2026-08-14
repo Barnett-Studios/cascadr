@@ -68,9 +68,20 @@ two unwrappers that disagreed would be their own defect.
 
 For a subprocess rung the **exit status is authoritative**: a non-zero exit is never an
 `Ok(completion)`, whatever it printed on stdout. Stdout is consulted only to give the failure a more
-precise name (an `is_error` envelope reports `anthropic_cli_is_error` rather than the generic exit
-code). Trusting stdout over the exit code is what made a crashed `claude` serve its panic message as
-a reviewer verdict (cascadr#2).
+precise name. Trusting stdout over the exit code is what made a crashed `claude` serve its panic
+message as a reviewer verdict (cascadr#2).
+
+**An `is_error` envelope names the status it carries.** The envelope states one in
+`api_error_status`, so the reason is `anthropic_cli_http_429` / `_http_5xx` / `_http_4xx`, mapped
+through the same `classify_http_status` table the HTTP rung uses so the two cannot disagree about
+429 or about the 4xx/5xx boundary. An envelope with no status, or one outside that table, keeps the
+generic `anthropic_cli_is_error`.
+
+This is a *naming* guarantee, not a routing one: every classified envelope is still `Unavailable`
+and still fails over. It exists because the token is what a consumer keys a tier policy on, and one
+token for every error meant a model-name typo (`api_error_status: 404`, exit 0) was indistinguishable
+from an exhausted subscription — enough, in the assembly this crate was extracted from, to latch
+"Max20 exhausted" and abandon the free rungs for the rest of an attempt loop (cascadr#6).
 
 ## Subprocess lifetime
 
