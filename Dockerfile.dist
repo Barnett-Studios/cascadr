@@ -13,7 +13,10 @@
 #
 # ubuntu:24.04 matches the release builder (ubuntu-latest, glibc 2.39) and ships
 # libgcc-s1 by default; the binary is OpenSSL-free (rustls), so only
-# ca-certificates is needed for outbound TLS.
+# ca-certificates is needed for outbound TLS. curl is installed because the
+# openai-compat rung shells out to it (no native HTTP client in the dependency
+# tree) — without it that rung, the only one reachable in this image, cannot
+# run (cascadr#26).
 FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
 
 LABEL org.opencontainers.image.source="https://github.com/Barnett-Studios/cascadr" \
@@ -21,7 +24,7 @@ LABEL org.opencontainers.image.source="https://github.com/Barnett-Studios/cascad
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
+        ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --user-group cascadr
 
