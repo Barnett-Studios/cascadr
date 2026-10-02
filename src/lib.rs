@@ -47,6 +47,25 @@ pub trait Provider: Send + Sync {
     fn label(&self) -> &'static str {
         "provider"
     }
+
+    /// `dispatch`, but paired with the label of whichever hop actually served the call —
+    /// not necessarily `self.label()` (attestr#1).
+    ///
+    /// For every leaf provider (`ClaudeCliDispatch`, `OpenAiCompat`) the two already agree,
+    /// so the default here is correct for them unmodified: pair `dispatch`'s result with
+    /// `self.label()`. `Router` is the one type where they disagree — its own `label()` is
+    /// the constant `"router"` regardless of which hop answered, which makes a
+    /// reviewer/author independence check compare `author="claude-…"` against
+    /// `reviewer="router"` and never match, so it would pass on every call whether or not
+    /// an independent reviewer actually ran. `Router` overrides this method to report the
+    /// serving hop's own label instead of its own.
+    async fn dispatch_with_label(
+        &self,
+        prompt: &str,
+    ) -> Result<(String, &'static str), ProviderError> {
+        let label = self.label();
+        self.dispatch(prompt).await.map(|text| (text, label))
+    }
 }
 
 // ---- classification helpers (M1: secrets never enter error/log text) ----
@@ -667,10 +686,26 @@ impl Router {
 #[async_trait::async_trait]
 impl Provider for Router {
     async fn dispatch(&self, prompt: &str) -> Result<String, ProviderError> {
+        self.dispatch_with_label(prompt).await.map(|(text, _)| text)
+    }
+
+    fn label(&self) -> &'static str {
+        "router"
+    }
+
+    /// Overridden rather than left to the default: the default pairs the result with
+    /// `self.label()`, which for `Router` is the constant `"router"` regardless of which
+    /// hop served the call — exactly the gap attestr#1 named. Walks the same hops `dispatch`
+    /// does, but returns the serving hop's own `dispatch_with_label` result, so a nested
+    /// `Router` also propagates its real leaf's label rather than stopping at its own.
+    async fn dispatch_with_label(
+        &self,
+        prompt: &str,
+    ) -> Result<(String, &'static str), ProviderError> {
         let mut reasons: Vec<String> = Vec::new();
         for (i, provider) in self.providers.iter().enumerate() {
-            match provider.dispatch(prompt).await {
-                Ok(text) => return Ok(text),
+            match provider.dispatch_with_label(prompt).await {
+                Ok((text, label)) => return Ok((text, label)),
                 Err(ProviderError::Failed(msg)) => return Err(ProviderError::Failed(msg)),
                 Err(ProviderError::Unavailable(reason)) => {
                     let next = self
@@ -687,10 +722,6 @@ impl Provider for Router {
             }
         }
         Err(ProviderError::Unavailable(reasons.join("; ")))
-    }
-
-    fn label(&self) -> &'static str {
-        "router"
     }
 }
 
@@ -1195,6 +1226,38 @@ mod tests {
         let router = Router::new(vec![Box::new(first), Box::new(second)]);
         let out = router.dispatch("prompt").await;
         assert_eq!(out, Ok("hello".to_string()));
+    }
+
+    /// attestr#1: a reviewer/author independence check compares harness labels. Before
+    /// this, `Router::label()` is the constant `"router"` no matter which hop served the
+    /// call, so the check would compare against `"router"` and never match — passing on
+    /// every call whether or not an independent reviewer actually ran. This asserts the
+    /// label `dispatch_with_label` reports is the *serving hop's own label*, not the
+    /// router's.
+    #[tokio::test]
+    async fn router_reports_the_serving_hops_label_not_its_own() {
+        let first =
+            RecordingProvider::new("first", Err(ProviderError::Unavailable("down".to_string())));
+        let second = RecordingProvider::new("second", Ok("hello".to_string()));
+        let router = Router::new(vec![Box::new(first), Box::new(second)]);
+        let out = router.dispatch_with_label("prompt").await;
+        assert_eq!(
+            out,
+            Ok(("hello".to_string(), "second")),
+            "must report the hop that actually answered, not the Router's own constant label"
+        );
+    }
+
+    /// A `Router` nested inside another `Router` (a cascade of cascades) must still
+    /// propagate the real leaf's label all the way up, not stop at the inner `Router`'s
+    /// own constant label either.
+    #[tokio::test]
+    async fn a_nested_router_still_reports_the_real_leafs_label() {
+        let leaf = RecordingProvider::new("leaf", Ok("deep-success".to_string()));
+        let inner_router = Router::new(vec![Box::new(leaf)]);
+        let outer = Router::new(vec![Box::new(inner_router)]);
+        let out = outer.dispatch_with_label("prompt").await;
+        assert_eq!(out, Ok(("deep-success".to_string(), "leaf")));
     }
 
     #[tokio::test]
