@@ -40,6 +40,12 @@ now returns `Unavailable("subscription_hop_proxied_…")` **before spawning anyt
 cascade falls through to a paid rung. A test asserts no child process is created, not merely that
 the answer is discarded — by the time a request has left, the cache is already gone.
 
+The same refusal covers `CLAUDE_CODE_USE_BEDROCK` (cascadr#23): it doesn't proxy the subscription,
+it replaces it with Bedrock outright, using the `AWS_*` credentials cascadr forwards by name —
+same argv, same stdin, no subscription hop, and (absent this guard) nothing reporting it either.
+Any value other than a known-falsy one (`"0"`/`"false"`/`"no"`/`"off"`, any case) refuses, fail-safe:
+an unrecognized value is treated as the switch being on, not trusted as off.
+
 **Honest limit:** `Router` still accepts any `Vec<Box<dyn Provider>>` and cannot tell a direct hop
 from a proxying one, so a *third-party* provider that proxies the subscription while occupying the
 first slot is not detected — the check above lives in `ClaudeCliDispatch`, the hop this crate owns
