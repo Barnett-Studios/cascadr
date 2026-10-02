@@ -1275,6 +1275,24 @@ mod tests {
         );
     }
 
+    /// `dispatch_with_label` must fail exactly the way `dispatch` does — an error carries
+    /// no label (there is nothing that served), so the two must be the same `Err`, not a
+    /// label-shaped variant of it.
+    #[tokio::test]
+    async fn dispatch_with_label_short_circuits_on_failed_identically_to_dispatch() {
+        let first = RecordingProvider::new(
+            "first",
+            Err(ProviderError::Failed("bad completion".to_string())),
+        );
+        let second = RecordingProvider::new("second", Ok("must-not-be-reached".to_string()));
+        let router = Router::new(vec![Box::new(first), Box::new(second)]);
+        let out = router.dispatch_with_label("prompt").await;
+        assert_eq!(
+            out,
+            Err(ProviderError::Failed("bad completion".to_string()))
+        );
+    }
+
     /// cascadr#3's option (a) — "a rung's output can be rejected and escalation forced by
     /// the caller" — is available today by composition, and this proves it through the
     /// public surface rather than asserting it in prose.
@@ -1353,6 +1371,57 @@ mod tests {
             }
             other => panic!("expected aggregated Unavailable, got {other:?}"),
         }
+    }
+
+    /// Same exhaustion path as `provider_router_aggregates_reasons_when_all_unavailable`,
+    /// through `dispatch_with_label` — must aggregate identically, with no label attached
+    /// to the error (nothing served the call).
+    #[tokio::test]
+    async fn dispatch_with_label_aggregates_reasons_identically_to_dispatch_when_all_unavailable() {
+        let first = RecordingProvider::new(
+            "first",
+            Err(ProviderError::Unavailable("http_429".to_string())),
+        );
+        let second = RecordingProvider::new(
+            "second",
+            Err(ProviderError::Unavailable(
+                "conn_refused_or_timeout".to_string(),
+            )),
+        );
+        let router = Router::new(vec![Box::new(first), Box::new(second)]);
+        let out = router.dispatch_with_label("prompt").await;
+        match out {
+            Err(ProviderError::Unavailable(msg)) => {
+                assert!(msg.contains("first: http_429"), "{msg}");
+                assert!(msg.contains("second: conn_refused_or_timeout"), "{msg}");
+            }
+            other => panic!("expected aggregated Unavailable, got {other:?}"),
+        }
+    }
+
+    /// A hand-written `Provider` (not the `RecordingProvider` test double) that never
+    /// touches `dispatch_with_label` — only `dispatch` and `label()` — must still report
+    /// its own label correctly when it is a `Router` hop, proving the *default*
+    /// implementation (pairing `dispatch`'s result with `label()`) works for a realistic
+    /// implementor, not just the double built for these tests.
+    struct CustomLabeledProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for CustomLabeledProvider {
+        async fn dispatch(&self, _prompt: &str) -> Result<String, ProviderError> {
+            Ok("from-custom-leaf".to_string())
+        }
+
+        fn label(&self) -> &'static str {
+            "custom-leaf"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_with_only_a_custom_label_reports_it_through_the_router() {
+        let router = Router::new(vec![Box::new(CustomLabeledProvider)]);
+        let out = router.dispatch_with_label("prompt").await;
+        assert_eq!(out, Ok(("from-custom-leaf".to_string(), "custom-leaf")));
     }
 
     #[tokio::test]
