@@ -356,18 +356,26 @@ pub fn filter_child_env(parent: &BTreeMap<String, String>) -> BTreeMap<String, S
 /// An exported-but-empty value is not a redirect. That is how a shell says "nobody filled
 /// this in", and refusing the subscription rung over it would cost the free hop for a
 /// variable carrying no destination.
+///
+/// `CLAUDE_CODE_USE_BEDROCK` (cascadr#23) is a second way this hop stops being the
+/// subscription: it does not proxy it, it replaces it — `claude -p` talks to Bedrock
+/// with the `AWS_*` credentials `ENV_PREFIX` forwards by name, same argv, same stdin.
+/// `ENV_EXACT` lists the variable deliberately, so under-flagging it is not an option
+/// the way an unknown future variable is; the guard must see it.
 pub fn subscription_redirect(env: &BTreeMap<String, String>) -> Option<&'static str> {
     env.iter()
         .find(|(k, v)| {
             !v.trim().is_empty()
-                && k.starts_with("ANTHROPIC_")
-                && (k.ends_with("_BASE_URL") || k.as_str() == "ANTHROPIC_API_URL")
+                && ((k.starts_with("ANTHROPIC_")
+                    && (k.ends_with("_BASE_URL") || k.as_str() == "ANTHROPIC_API_URL"))
+                    || k.as_str() == "CLAUDE_CODE_USE_BEDROCK")
         })
         // The NAME only, never the value: the value is a url, and M1 keeps urls out of
         // every reason this crate emits.
         .map(|(k, _)| match k.as_str() {
             "ANTHROPIC_BASE_URL" => "subscription_hop_proxied_anthropic_base_url",
             "ANTHROPIC_API_URL" => "subscription_hop_proxied_anthropic_api_url",
+            "CLAUDE_CODE_USE_BEDROCK" => "subscription_hop_bedrock",
             _ => "subscription_hop_proxied",
         })
 }
@@ -750,6 +758,31 @@ mod tests {
                 "M1: the reason must name the variable, never its url — {var} gave {reason}"
             );
         }
+    }
+
+    #[test]
+    fn claude_code_use_bedrock_refuses_the_hop() {
+        // cascadr#23: `CLAUDE_CODE_USE_BEDROCK` is in `ENV_EXACT` by name, next to the
+        // `AWS_` prefix that carries the credentials it needs. It does not proxy the
+        // subscription — it replaces it with a different cockpit entirely — but the
+        // effect on this invariant is identical: same argv, same stdin, no subscription
+        // hop, and nothing reporting it.
+        let e = env(&[
+            ("PATH", "/usr/bin"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_ACCESS_KEY_ID", "AKIA_not_a_real_key"),
+            ("AWS_REGION", "us-east-1"),
+        ]);
+        let reason = subscription_redirect(&e)
+            .expect("CLAUDE_CODE_USE_BEDROCK points the hop at Bedrock and must fire");
+        assert_eq!(reason, "subscription_hop_bedrock");
+    }
+
+    #[test]
+    fn claude_code_use_bedrock_empty_is_not_a_redirect() {
+        // Same "empty means nobody filled it in" convention as the url-redirect vars.
+        let e = env(&[("PATH", "/usr/bin"), ("CLAUDE_CODE_USE_BEDROCK", "")]);
+        assert_eq!(subscription_redirect(&e), None);
     }
 
     #[test]
