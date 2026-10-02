@@ -1,9 +1,12 @@
 # cascadr — cost-ordered fail-open LLM provider cascade.
-# Ships the CLI only. The `anthropic-cli` rung invokes `claude` from PATH (mount
-# it / install it in a derived image); the OpenAI-compat rung needs
-# $LLM_OPENAI_COMPAT_URL and shells out to `curl` (no native HTTP client in the
-# dependency tree) — curl is installed so that rung is actually reachable in
-# this image (cascadr#26). cascadr never proxies the subscription hop.
+# Ships the CLI only. The `anthropic-cli` rung invokes `claude` from PATH, which
+# this image does NOT have — mount it / install it in a derived image to use that
+# rung here. As shipped, the only rung this image can reach is OpenAI-compat: set
+# $LLM_OPENAI_COMPAT_URL to an https endpoint (http is allowed only to this
+# CONTAINER's own loopback — not the host's). It shells out to `curl` (no native
+# HTTP client in the dependency tree) — curl is installed so that rung is actually
+# reachable (cascadr#26); without it the rung could never run regardless of the
+# URL. cascadr never proxies the subscription hop.
 FROM rust:1.94-slim-bookworm AS builder
 WORKDIR /build
 COPY . .

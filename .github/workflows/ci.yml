@@ -30,3 +30,37 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test
+
+  # cascadr#26: both runtime images must carry `curl` — it's the only client the
+  # openai-compat rung has (no reqwest/hyper/ureq in the dependency tree), and the
+  # image has no `claude`, so a missing curl means that image can reach no rung at
+  # all. `docker run --entrypoint curl ... --version` proves the binary is present
+  # AND executable: a missing binary fails at the OCI-runtime layer ("executable
+  # file not found in $PATH"), distinct from curl itself failing — unlike asking
+  # cascadr's own openai-compat rung, which reports a missing curl and a refused
+  # connection with the same reason string (filed separately, cascadr#26's report).
+  docker-curl-smoke:
+    name: docker-curl-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: build Dockerfile (source build)
+        run: docker build -t cascadr-ci:dockerfile -f Dockerfile .
+      - name: curl present and executable in Dockerfile image
+        run: docker run --rm --entrypoint curl cascadr-ci:dockerfile --version
+      - name: stage a stub binary for Dockerfile.dist
+        # Dockerfile.dist only COPYs a prebuilt binary — this step exists in the
+        # real release pipeline (release.yml), not here. A stub is enough: this
+        # job smoke-tests the apt-get layer (curl, ca-certificates), not the real
+        # cascadr binary's behavior — that's covered by `cargo test` above.
+        run: |
+          mkdir -p dist/linux/amd64
+          printf '#!/bin/sh\necho stub\n' > dist/linux/amd64/cascadr
+          chmod +x dist/linux/amd64/cascadr
+      - name: build Dockerfile.dist (stub binary)
+        run: docker build -t cascadr-ci:dockerfile-dist -f Dockerfile.dist --build-arg TARGETARCH=amd64 .
+      - name: curl present and executable in Dockerfile.dist image
+        run: docker run --rm --entrypoint curl cascadr-ci:dockerfile-dist --version
