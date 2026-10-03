@@ -83,6 +83,18 @@ token for every error meant a model-name typo (`api_error_status: 404`, exit 0) 
 from an exhausted subscription — enough, in the assembly this crate was extracted from, to latch
 "Max20 exhausted" and abandon the free rungs for the rest of an attempt loop (cascadr#6).
 
+**Escalation suppression (making a status `Failed` instead of `Unavailable`) remains undecided,
+on purpose, and that 404 is why.** `anthropic-cli`'s model comes from cascadr's own `--model`
+argument; `openai-compat`'s model comes from the independent `LLM_OPENAI_COMPAT_MODEL` env var —
+not the same identifier space, so a 404 "unrecognized model" on one rung says nothing about the
+other, and suppressing escalation on it would wrongly abandon a rung that might well answer.
+The same independence holds for a captured 401/403 (separate credentials per rung), should one
+ever be captured. `tests/fixtures/is_error_unrecognized_model.json` is the real, unedited artifact
+this reasoning was re-checked against (cascadr#6) — committed specifically so the next person
+re-litigating this has a real sample to argue from, not only prose. Usage-limit/rate-limit shapes
+remain unclassified for a different reason: producing one on demand means actually exhausting a
+Max20 window, which is not something to do deliberately to harvest a fixture.
+
 ## Subprocess lifetime
 
 **A rung that has given up does not leave its process running.** Every spawned command sets

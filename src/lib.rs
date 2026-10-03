@@ -100,6 +100,23 @@ pub fn is_unavailable_status(status: u16) -> bool {
 /// alone, because `Failed` means *would reproduce on every rung* and a 404 for a model this
 /// rung does not have says nothing about the next rung's models (cascadr#6).
 ///
+/// **That 404 is now a committed fixture** (`tests/fixtures/is_error_unrecognized_model.json`,
+/// unedited stdout, command recorded in the sibling `.command.txt`), captured deterministically
+/// at zero cost — re-checked against this exact structural reasoning before being left
+/// unclassified: `ClaudeCliDispatch`'s model comes from cascadr's own `--model` argument;
+/// `OpenAiCompat`'s model comes from the independent `LLM_OPENAI_COMPAT_MODEL` env var
+/// ([`OpenAiCompat::from_env`]). A 404 on one says nothing about the other — they are not the same
+/// identifier space — so escalating past it is correct, not a wasted retry, and this status
+/// stays `Unavailable` rather than becoming `Failed`. The same independence applies to a
+/// captured 401/403 (separate credentials per rung) if one is ever captured; none has been.
+///
+/// **Not captured, and not classifiable on that account: usage-limit/rate-limit shapes.**
+/// Producing one on demand means actually exhausting a Max20 subscription window, which isn't
+/// something to do deliberately to harvest a fixture. `anthropic_cli_http_429` and the generic
+/// `anthropic_cli_is_error` (no status, or a status outside the taxonomy — the shape the 2026-08-13
+/// investigation on this issue found no captured sample of either) remain `Unavailable` and keep
+/// failing over, unchanged, pending a real sample.
+///
 /// An envelope with no `api_error_status`, or one outside the taxonomy, keeps the generic
 /// reason. Fail-open: an unrecognised error is still an error, and the cascade still moves.
 pub fn classify_anthropic_cli(stdout: &str) -> Option<&'static str> {
@@ -1108,6 +1125,25 @@ mod tests {
                 "status {status}"
             );
         }
+    }
+
+    #[test]
+    fn a_captured_real_envelope_classifies_the_same_as_the_hand_authored_fixture() {
+        // cascadr#6, round 3: `cli_error_envelope` above is "hand-authored from a measured
+        // run" — this test grounds that claim in an actual committed artifact instead of
+        // prose. `tests/fixtures/is_error_unrecognized_model.json` is the UNEDITED stdout of
+        // `echo hi | claude -p --model this-model-does-not-exist-xyz --output-format json`
+        // (command recorded in the sibling `.command.txt`), captured at zero cost — the
+        // model-name check rejects before any inference call (`duration_api_ms:0`).
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/is_error_unrecognized_model.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fixture must exist at {}: {e}", path.display()));
+        assert_eq!(
+            classify_anthropic_cli(&raw),
+            Some("anthropic_cli_http_4xx"),
+            "the real captured envelope must classify exactly as the hand-authored one does"
+        );
     }
 
     #[test]
