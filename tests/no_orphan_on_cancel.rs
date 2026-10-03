@@ -16,9 +16,34 @@
 use cascadr::{ClaudeCliDispatch, Provider};
 use std::time::Duration;
 
+/// Blocks on the kernel's own exit event for `pid` instead of sampling `kill(pid, 0)` on an
+/// interval, which was this test's previous approach and the source of cascadr#33's flake:
+/// `kill(pid, 0)` cannot distinguish "exited but not yet reaped" (a zombie, which it reports
+/// as alive) from "still running", so a process already killed could read as alive for
+/// however long reaping happened to lag under load. `waitpid` resolves it unambiguously: it
+/// returns the moment the kernel actually reaps the child, win or lose the race against
+/// tokio's own orphan reaper.
+///
+/// Returns `true` once the pid is confirmed gone (reaped here, or already reaped elsewhere —
+/// `ECHILD` means exactly that, since `pid` is a real child of this process), `false` if the
+/// bounded wait elapses with the process still running.
 #[cfg(unix)]
-fn alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
+async fn reaped_within(pid: i32, timeout: Duration) -> bool {
+    let wait = tokio::task::spawn_blocking(move || loop {
+        let mut status: i32 = 0;
+        let ret = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if ret == pid {
+            return true; // reaped here: it had exited
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => continue,
+            // Already reaped by tokio's orphan queue (kill_on_drop's drop path runs
+            // asynchronously) — gone either way.
+            Some(libc::ECHILD) => return true,
+            _ => return false,
+        }
+    });
+    matches!(tokio::time::timeout(timeout, wait).await, Ok(Ok(true)))
 }
 
 #[tokio::test]
@@ -60,14 +85,11 @@ async fn dropping_the_dispatch_future_kills_the_claude_it_spawned() {
         .parse()
         .unwrap_or(0);
 
-    let mut still_alive = true;
-    for _ in 0..50 {
-        still_alive = pid != 0 && alive(pid);
-        if !still_alive {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let still_alive = if pid == 0 {
+        false
+    } else {
+        !reaped_within(pid, Duration::from_secs(5)).await
+    };
     if still_alive {
         unsafe { libc::kill(pid, libc::SIGKILL) };
     }
