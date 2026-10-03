@@ -12,15 +12,29 @@ fail-open cascade. Library crate + thin CLI.
 > of the Router that stays ours; everything else is swappable.
 
 `ClaudeCliDispatch` enforces its half: if the child's environment carries an
-`ANTHROPIC_*_BASE_URL` (or `ANTHROPIC_API_URL`) with a non-empty value, `dispatch` returns
-`Unavailable("subscription_hop_proxied_…")` **without spawning**, and the Router advances to the
-next rung. The reason names the variable, never its value — a url never enters a classified reason.
-An exported-but-empty value is not a redirect.
+`ANTHROPIC_*_BASE_URL` (or `ANTHROPIC_API_URL`) with a non-empty value, or `CLAUDE_CODE_USE_BEDROCK`
+with any value other than a known-falsy one (`"0"`/`"false"`/`"no"`/`"off"`, case-insensitive, same
+as empty), `dispatch` returns `Unavailable("subscription_hop_proxied_…")` /
+`Unavailable("subscription_hop_bedrock")` **without spawning**, and the Router advances to the next
+rung. `CLAUDE_CODE_USE_BEDROCK` does not proxy the subscription — it replaces it with Bedrock, using
+the `AWS_*` credentials `ENV_PREFIX` forwards by name — but it is refused for the same reason: same
+argv, same stdin, no subscription hop, nothing reporting it. The reason names the variable, never
+its value — a url never enters a classified reason.
+
+The two checks differ because the vars differ: a URL var is a destination, so empty is the only
+"nobody filled this in" shape and anything else refuses. `CLAUDE_CODE_USE_BEDROCK` is a boolean
+switch, so "is it set" is the wrong question — an operator who explicitly turned it off must not
+lose the free rung — but the safe direction flips too: the falsy set is a fixed, known list, and
+anything NOT in it refuses, including a value this list has never seen. Trusting an unrecognized
+value as "probably off" would be the fail-open mistake this guard exists to prevent.
 
 The rule is "an allowlisted var that names where the request goes", not a fixed list of names, and
 it under-flags rather than over-flags: a redirect var named something else is missed; a direct hop is
-never refused. What it does **not** cover is a third-party `Provider` in the first slot that proxies
-the subscription itself — the check lives in the hop this crate spawns.
+never refused. `CLAUDE_CODE_USE_BEDROCK` is deliberately named in `ENV_EXACT`, so it does not fall
+under that under-flagging allowance — it is checked explicitly (cascadr#23). What this still does
+**not** cover is a third-party `Provider` in the first slot that proxies the subscription itself, or
+any other Claude Code redirect switch (e.g. a Vertex equivalent) not yet in `ENV_EXACT` — the check
+lives in the hop this crate spawns, over the names that hop is actually given.
 
 ## Fail-open semantics
 

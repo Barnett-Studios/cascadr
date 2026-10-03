@@ -375,18 +375,44 @@ pub fn filter_child_env(parent: &BTreeMap<String, String>) -> BTreeMap<String, S
 /// An exported-but-empty value is not a redirect. That is how a shell says "nobody filled
 /// this in", and refusing the subscription rung over it would cost the free hop for a
 /// variable carrying no destination.
+///
+/// `CLAUDE_CODE_USE_BEDROCK` (cascadr#23) is a second way this hop stops being the
+/// subscription: it does not proxy it, it replaces it — `claude -p` talks to Bedrock
+/// with the `AWS_*` credentials `ENV_PREFIX` forwards by name, same argv, same stdin.
+/// `ENV_EXACT` lists the variable deliberately, so under-flagging it is not an option
+/// the way an unknown future variable is; the guard must see it.
+///
+/// Unlike the URL vars, this one is a boolean switch, not a destination, so "is it set"
+/// is the wrong question — an operator who explicitly turned it off (`"0"`/`"false"`/
+/// `"no"`/`"off"`, any case) must not lose the free rung over a switch that is OFF. The
+/// direction that must stay safe is the other one: any value NOT in that known-falsy set
+/// refuses, including one this list has never seen, because this flag chooses a
+/// different cockpit entirely and treating an unrecognized value as "probably off" is
+/// the fail-open mistake this guard exists to prevent.
+fn is_known_falsy(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
 pub fn subscription_redirect(env: &BTreeMap<String, String>) -> Option<&'static str> {
     env.iter()
         .find(|(k, v)| {
-            !v.trim().is_empty()
-                && k.starts_with("ANTHROPIC_")
-                && (k.ends_with("_BASE_URL") || k.as_str() == "ANTHROPIC_API_URL")
+            if k.as_str() == "CLAUDE_CODE_USE_BEDROCK" {
+                !is_known_falsy(v)
+            } else {
+                !v.trim().is_empty()
+                    && k.starts_with("ANTHROPIC_")
+                    && (k.ends_with("_BASE_URL") || k.as_str() == "ANTHROPIC_API_URL")
+            }
         })
         // The NAME only, never the value: the value is a url, and M1 keeps urls out of
         // every reason this crate emits.
         .map(|(k, _)| match k.as_str() {
             "ANTHROPIC_BASE_URL" => "subscription_hop_proxied_anthropic_base_url",
             "ANTHROPIC_API_URL" => "subscription_hop_proxied_anthropic_api_url",
+            "CLAUDE_CODE_USE_BEDROCK" => "subscription_hop_bedrock",
             _ => "subscription_hop_proxied",
         })
 }
@@ -781,6 +807,58 @@ mod tests {
                 "M1: the reason must name the variable, never its url — {var} gave {reason}"
             );
         }
+    }
+
+    #[test]
+    fn claude_code_use_bedrock_refuses_the_hop() {
+        // cascadr#23: `CLAUDE_CODE_USE_BEDROCK` is in `ENV_EXACT` by name, next to the
+        // `AWS_` prefix that carries the credentials it needs. It does not proxy the
+        // subscription — it replaces it with a different cockpit entirely — but the
+        // effect on this invariant is identical: same argv, same stdin, no subscription
+        // hop, and nothing reporting it.
+        let e = env(&[
+            ("PATH", "/usr/bin"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_ACCESS_KEY_ID", "AKIA_not_a_real_key"),
+            ("AWS_REGION", "us-east-1"),
+        ]);
+        let reason = subscription_redirect(&e)
+            .expect("CLAUDE_CODE_USE_BEDROCK points the hop at Bedrock and must fire");
+        assert_eq!(reason, "subscription_hop_bedrock");
+    }
+
+    #[test]
+    fn claude_code_use_bedrock_empty_is_not_a_redirect() {
+        // Same "empty means nobody filled it in" convention as the url-redirect vars.
+        let e = env(&[("PATH", "/usr/bin"), ("CLAUDE_CODE_USE_BEDROCK", "")]);
+        assert_eq!(subscription_redirect(&e), None);
+    }
+
+    #[test]
+    fn claude_code_use_bedrock_known_falsy_values_are_not_a_redirect() {
+        // Unlike the URL-redirect vars, this one is a boolean switch, not a destination —
+        // "0"/"false"/"no"/"off" (any case) mean the operator turned it OFF, and refusing
+        // the free subscription rung over an explicitly-disabled switch would be wrong in
+        // the expensive direction.
+        for v in ["0", "false", "FALSE", "False", "no", "NO", "off", "Off"] {
+            let e = env(&[("PATH", "/usr/bin"), ("CLAUDE_CODE_USE_BEDROCK", v)]);
+            assert_eq!(
+                subscription_redirect(&e),
+                None,
+                "CLAUDE_CODE_USE_BEDROCK={v:?} is explicitly falsy and must not refuse the hop"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_code_use_bedrock_unknown_value_still_refuses() {
+        // Fail-safe, not fail-open: this flag chooses a different cockpit entirely, so an
+        // unrecognized value is treated as "on" rather than silently trusted as "off". Only
+        // the known-falsy set above is safe to pass through.
+        let e = env(&[("PATH", "/usr/bin"), ("CLAUDE_CODE_USE_BEDROCK", "maybe")]);
+        let reason = subscription_redirect(&e)
+            .expect("an unrecognized CLAUDE_CODE_USE_BEDROCK value must refuse, not pass");
+        assert_eq!(reason, "subscription_hop_bedrock");
     }
 
     #[test]
