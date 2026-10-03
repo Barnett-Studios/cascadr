@@ -1,0 +1,15 @@
+Captured 2026-10-03, against the real `claude` CLI (subscription/OAuth auth, not an API
+key), zero cost (duration_api_ms:0 — rejected before any model call):
+
+    echo "hi" | claude -p --model this-model-does-not-exist-xyz --output-format json \
+      >tests/fixtures/is_error_unrecognized_model.json 2>/dev/null
+
+stderr (not part of the fixture, recorded for completeness):
+
+    [claude-code:unrecognized_model] {"model":"this-model-does-not-exist-xyz","query_source":"sdk"}
+
+Reproduces deterministically: any `--model` value `claude -p` doesn't recognize answers
+the same shape (`is_error:true`, `api_error_status:404`, `terminal_reason:"api_error"`).
+cascadr#6 — captured so the classifier's "measured" claim is a committed artifact, not
+only prose. See the doc comment on `classify_anthropic_cli` and CONTRACT.md for why this
+exact shape is NOT classified as escalation-suppressing (`Failed`) despite being 4xx.
