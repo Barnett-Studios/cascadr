@@ -73,7 +73,8 @@ cargo install cascadr                                   # any platform
 # "Why this exists" below). Point LLM_OPENAI_COMPAT_URL at an https gateway (http
 # works only to the container's OWN loopback, which the host is not), or build a
 # derived image that adds `claude` for the subscription rung too (cascadr#26).
-docker run --rm -i -e LLM_OPENAI_COMPAT_URL=https://your-gateway/v1 \
+docker run --rm -i -e LLM_OPENAI_COMPAT_URL=https://your-gateway \
+  -e LLM_OPENAI_COMPAT_MODEL=your-model-name \
   ghcr.io/barnett-studios/cascadr --model sonnet
 ```
 
