@@ -75,7 +75,13 @@ rungs of that cascade; a local-fleet rung can be layered in by a wider cascade, 
 ```sh
 brew tap Barnett-Studios/tap && brew install cascadr   # macOS/Linux
 cargo install cascadr                                   # any platform
-docker run --rm -i ghcr.io/barnett-studios/cascadr --model sonnet   # container
+# container: openai-compat rung only — the image has no `claude`, by design (see
+# "Why this exists" below). Point LLM_OPENAI_COMPAT_URL at an https gateway (http
+# works only to the container's OWN loopback, which the host is not), or build a
+# derived image that adds `claude` for the subscription rung too (cascadr#26).
+docker run --rm -i -e LLM_OPENAI_COMPAT_URL=https://your-gateway \
+  -e LLM_OPENAI_COMPAT_MODEL=your-model-name \
+  ghcr.io/barnett-studios/cascadr --model sonnet
 ```
 
 ## Use
