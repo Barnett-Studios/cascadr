@@ -31,6 +31,17 @@ advances to the next rung. Only when **every** rung is unavailable does `dispatc
 A genuine task failure (a real completion that happens to be wrong) is a completion, not an
 unavailability — it surfaces downstream, not swallowed.
 
+`Router::dispatch_with_label` walks the same hops and returns the same completion, paired with
+the **serving hop's own label** — never the Router's own constant `"router"` — through any depth
+of `Router`-inside-`Router` nesting (attestr#1: an independence check compares harness labels,
+and `author="…"` vs `reviewer="router"` would never match, passing on every call). An error from
+either method carries no label; a label only exists once something has actually answered. Any
+`Provider` that overrides `dispatch_with_label` directly (rather than taking the default, which
+pairs `dispatch`'s result with `label()`) must keep it consistent with `dispatch`:
+`self.dispatch(p) == self.dispatch_with_label(p).map(|(s, _)| s)` for every `p`, always. `Router`
+is the one type in this crate that overrides it, precisely to replace its own label with the
+leaf's.
+
 ### Availability failover, not a quality router
 
 **cascadr never inspects a completion's content, and never escalates because an answer was
@@ -105,6 +116,11 @@ descendants are reparented rather than killed. The token-spending process itself
 ```rust
 pub trait Provider: Send + Sync {
     async fn dispatch(&self, prompt: &str) -> Result<String, ProviderError>;
+    fn label(&self) -> &'static str { "provider" }   // telemetry only — never a url/secret
+    // default: pairs dispatch()'s result with label(); Router overrides this to report
+    // the serving hop's own label instead of its own constant "router" (see above).
+    async fn dispatch_with_label(&self, prompt: &str)
+        -> Result<(String, &'static str), ProviderError>;
 }
 pub struct ClaudeCliDispatch {
     pub model: String, pub timeout: Duration, pub work_dir: PathBuf,
